@@ -7,16 +7,26 @@ Testnet verifier contract:
 
 ## Quick Start
 
-1. Install prerequisites: Node.js 22+, Rust, Stellar CLI, and `circom`.
-2. Fund a Testnet account and export a secret key:
+1. Install prerequisites: Node.js 22+, Rust, Stellar CLI, `make`, and `circom`.
+2. Install the workspace dependencies from the repository root:
+   `make install`
+3. Build the verifier contract and SDK:
+   `make build`
+4. Run the full local check suite:
+   `make test`
+5. Fund a Testnet account and export a secret key:
    `export SOROBAN_SECRET_KEY=...`
-3. In `sdk/`, install dependencies and run the SDK tests:
-   `npm install && npm test`
-4. In `demo/`, install dependencies and export:
+6. Export the demo RPC and verifier contract settings:
    `export SOROBAN_RPC_URL=https://soroban-testnet.stellar.org`
    `export SOROBAN_CONTRACT_ID=CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`
-5. Run the end-to-end demo:
-   `npx ts-node src/run.ts`
+7. Run the end-to-end demo:
+   `make demo`
+
+Useful maintenance commands:
+
+- `make lint`: run Rust formatting, clippy, and TypeScript checks.
+- `make circuits`: compile and verify the reference Poseidon preimage circuit.
+- `make clean`: remove generated Rust, SDK, demo, and circuit build artifacts.
 
 Expected result:
 `✓ Proof verified on-chain: true`
