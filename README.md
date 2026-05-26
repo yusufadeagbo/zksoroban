@@ -76,6 +76,24 @@ The reference circuit exposes one public input, `commitment`, and one private in
 - Example successful demo transaction:
   `020bf0bf7a05e92efa2188f2f0b74e474f06a03a9a84b4042b159219bdb8ede6`
 
+## verifyOffChain vs verifyOnChain
+
+The SDK exposes two verification helpers.
+
+**`verifyOffChain(proof, publicSignals, verificationKey)`** runs Groth16 verification locally using `snarkjs`. It does not touch the network, costs no fees, and returns in milliseconds. Use it during development to confirm that proof generation worked before submitting a transaction — this catches bad proofs, encoding mismatches, or wrong circuit parameters without spending Testnet or Mainnet funds.
+
+```ts
+import { verifyOffChain } from "@zksoroban/sdk";
+import vk from "../circuits/poseidon_preimage/setup/verification_key.json";
+
+const valid = await verifyOffChain(proof, publicSignals, vk);
+if (!valid) throw new Error("Proof invalid — will not submit");
+```
+
+**`verifyOnChain(opts)`** submits a Soroban transaction to the deployed verifier contract. Use it when you need an on-chain record of verification or are building a dApp that depends on the contract's return value. It requires an RPC endpoint, a funded keypair, and pays a small transaction fee.
+
+A typical workflow is to call `verifyOffChain` first and only proceed to `verifyOnChain` once the local check passes.
+
 ## Notes
 
 - The setup artifacts in `circuits/poseidon_preimage/setup/` are testnet-only and non-production.
