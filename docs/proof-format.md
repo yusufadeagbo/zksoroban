@@ -214,6 +214,41 @@ vk_x = IC[0] + IC[1] * public_input
 
 and checks the Groth16 pairing equation with the hardcoded verifying key constants.
 
+## Canonical Test Vectors
+
+[`sdk/test/vectors.json`](../sdk/test/vectors.json) is the canonical interoperability reference for this format. It contains 12 test cases covering:
+
+- the reference Testnet proof
+- edge cases: zero coordinates, all-ones coordinates, max scalar field value (`Fr - 1`), max accepted coordinate value (`Fr - 1`)
+- public input variants: zero, one, large mid-range value, `0x`-prefixed hex string, two inputs
+- G2 structural variants: `c1 = 0` (element lies in base field), near-max coordinates
+
+Each entry has the shape:
+
+```json
+{
+  "id": "reference",
+  "description": "reference Testnet proof",
+  "snarkjsProof": { "pi_a": [...], "pi_b": [...], "pi_c": [...], "protocol": "groth16" },
+  "publicSignals": ["..."],
+  "expectedCalldata": {
+    "proofA": "<128 hex chars>",
+    "proofB": "<256 hex chars>",
+    "proofC": "<128 hex chars>",
+    "publicInputs": ["<64 hex chars>", ...]
+  }
+}
+```
+
+An SDK implementation in any language is considered compatible if it produces byte-identical `expectedCalldata` for every vector. The TypeScript SDK verifies this in `sdk/test/vectors.test.ts`.
+
+To regenerate the vectors after changing the encoding logic:
+
+```sh
+cd sdk
+node_modules/.bin/tsx test/gen-vectors.ts > test/vectors.json
+```
+
 ## Interoperability Checklist
 
 If another implementation wants to interoperate with this verifier, it must:
