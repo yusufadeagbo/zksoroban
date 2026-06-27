@@ -15,5 +15,9 @@ circuits/poseidon_preimage/setup/*_final.zkey
 circuits/poseidon_preimage/setup/proof_real.json
 circuits/poseidon_preimage/setup/public_real.json
 circuits/poseidon_preimage/setup/verification_key_real.json
+circuits/merkle_inclusion/build/
+circuits/merkle_inclusion/setup/*.ptau
+circuits/merkle_inclusion/setup/*_0000.zkey
+circuits/merkle_inclusion/setup/*_final.zkey
 soroban-zk.md
 BUILD_LOG.md
