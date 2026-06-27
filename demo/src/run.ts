@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, Networks } from "@stellar/stellar-sdk";
 
-import { formatProof, poseidon, verifyOnChain } from "@zksoroban/sdk";
+import { ProofBundle, poseidon, verifyOnChain } from "@zksoroban/sdk";
 
 const snarkjs: any = require("snarkjs");
 
@@ -38,12 +38,22 @@ async function main(): Promise<void> {
   };
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath);
-  const calldata = formatProof(proof, publicSignals);
+  const bundle: ProofBundle = {
+    proof,
+    publicSignals,
+    circuit: "poseidon_preimage",
+    generatedAt: new Date().toISOString(),
+    networkPassphrase: Networks.TESTNET
+  };
+
+  console.log(`circuit: ${bundle.circuit}`);
+  console.log(`generatedAt: ${bundle.generatedAt}`);
+
   const result = await verifyOnChain({
     rpcUrl,
     contractId,
     keypair: Keypair.fromSecret(secretKey),
-    calldata
+    bundle
   });
 
   console.log(`secret: ${secret.toString()}`);
