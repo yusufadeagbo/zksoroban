@@ -13,6 +13,7 @@ import {
   VerifyOptions,
   VerifyResult
 } from "./types";
+import { validateCalldata } from "./validate";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;
@@ -69,6 +70,8 @@ function decodeReturnValueFromDiagnostics(
 }
 
 export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
+  validateCalldata(opts.calldata);
+
   try {
     const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
     const network = await server.getNetwork();

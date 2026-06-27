@@ -4,6 +4,7 @@ import {
   SorobanZkError,
   SorobanZkErrorCode
 } from "./types";
+import { validateProofInput } from "./validate";
 
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
@@ -85,6 +86,8 @@ export function formatProof(
   proof: SnarkjsProof,
   publicSignals: string[]
 ): SorobanProofCalldata {
+  validateProofInput(proof, publicSignals);
+
   if (!proof || proof.protocol !== "groth16") {
     throw new SorobanZkError(
       "Proof must be a Groth16 snarkjs proof",

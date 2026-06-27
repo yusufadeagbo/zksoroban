@@ -44,3 +44,14 @@ export class SorobanZkError extends Error {
   }
 }
 
+export class ZkInputError extends SorobanZkError {
+  constructor(
+    public field: string,
+    public reason: string,
+    code: SorobanZkErrorCode = SorobanZkErrorCode.INVALID_PROOF_FORMAT
+  ) {
+    super(`${field} ${reason}`, code);
+    this.name = "ZkInputError";
+  }
+}
+
