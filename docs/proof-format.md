@@ -167,6 +167,120 @@ Total proof bytes excluding public input vector overhead:
 64 + 128 + 64 = 256 bytes
 ```
 
+## Byte Offset Tables
+
+### G1 point (64 bytes)
+
+| Offset | Length | Field | Source |
+| ------ | ------ | ----- | ------ |
+| 0      | 32     | x     | `be32(pi[0])` |
+| 32     | 32     | y     | `be32(pi[1])` |
+
+Applies to both `proofA` (from `pi_a`) and `proofC` (from `pi_c`). The projective `"1"` coordinate is dropped.
+
+### G2 point (128 bytes)
+
+| Offset | Length | Field | Source |
+| ------ | ------ | ----- | ------ |
+| 0      | 32     | x.c1  | `be32(pi_b[0][1])` |
+| 32     | 32     | x.c0  | `be32(pi_b[0][0])` |
+| 64     | 32     | y.c1  | `be32(pi_b[1][1])` |
+| 96     | 32     | y.c0  | `be32(pi_b[1][0])` |
+
+Note the `c1 || c0` ordering: the second decimal string in each `snarkjs` pair is serialized first.
+
+### Field element (32 bytes)
+
+| Offset | Length | Field | Source |
+| ------ | ------ | ----- | ------ |
+| 0      | 32     | value | `be32(publicSignals[i])` |
+
+A field element is an unsigned big-endian integer, left-zero-padded to exactly 32 bytes.
+
+## Test Vectors
+
+These vectors are derived from the reference Poseidon preimage circuit and are asserted byte-for-byte against `formatProof` in `sdk/test/encodingVectors.test.ts`. Any conforming encoder must reproduce the same hex.
+
+### Vector 1 — G1 point (`pi_a` → `proofA`)
+
+Input:
+
+```json
+"pi_a": [
+  "12946189436829403618966220759719705708977906405469583648347011074291292904431",
+  "17846713770550029036762679037427780901272879957385833493399084385066856475855",
+  "1"
+]
+```
+
+Expected `proofA` (64 bytes):
+
+```text
+1c9f4896deda7ee2355d0450495c287824c2d7a7273526cb4e379a2bb7331bef  <- bytes  0..31  x = be32(pi_a[0])
+2774e1ccdf712d4b913fa2fb73a9e9d3c411325f0a606457672dde2e164feccf  <- bytes 32..63  y = be32(pi_a[1])
+```
+
+### Vector 2 — G2 point (`pi_b` → `proofB`)
+
+Input:
+
+```json
+"pi_b": [
+  [
+    "4868706037346960113729884583027415258186007556306885243919406599273503594535",
+    "526556730654810474824964081699165504518965096591893711302336565643976863155"
+  ],
+  [
+    "5180825636680948260660547583298967864649885973974901129454802661259011234573",
+    "16809837894866804556259265269481849644880426909145197949901144799866943307688"
+  ],
+  ["1", "0"]
+]
+```
+
+Expected `proofB` (128 bytes):
+
+```text
+012a0542a3eb25f9dd3b1c1a1c8dde882c7d39cdaeab789ed7052598802f6db3  <- bytes   0..31  x.c1 = be32(pi_b[0][1])
+0ac39707cbd15b1dd86963d88639f9263f1c3d10edb06a3b6a7f8496adf91827  <- bytes  32..63  x.c0 = be32(pi_b[0][0])
+252a07f51df2b1b6aa65162f17933bfaa2245f427a024b1abc76654a2fc1ffa8  <- bytes  64..95  y.c1 = be32(pi_b[1][1])
+0b743e4f2c12b5c36eff491f6343c52b1d979dd222f786261f170403314d1b0d  <- bytes  96..127 y.c0 = be32(pi_b[1][0])
+```
+
+Notice that `0x012a05...` comes from `pi_b[0][1]` (the `c1` coefficient), not `pi_b[0][0]`. This is the most common interoperability mistake.
+
+### Vector 3 — Field element (`publicSignals[0]`)
+
+Input:
+
+```json
+"publicSignals": [
+  "18586133768512220936620570745912940619677854269274689475585506675881198879027"
+]
+```
+
+Expected `publicInputs[0]` (32 bytes):
+
+```text
+29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133  <- bytes 0..31  be32(publicSignals[0])
+```
+
+`proofC` (the second G1 point) encodes identically to Vector 1 using `pi_c`:
+
+```text
+11c9db1a44293dd937839d0b271f95fbe7ac78df2331560beed6a29803aac919  <- bytes  0..31  x = be32(pi_c[0])
+0c3780eb59106c3791d39969fca352f41f146690cda50d1c3c80c5def64501de  <- bytes 32..63  y = be32(pi_c[1])
+```
+
+## Gotchas
+
+These are the encoding pitfalls that cause an off-chain-valid proof to fail at the contract boundary.
+
+1. **Endianness.** All coordinates and field elements are **big-endian**. `snarkjs` emits decimal strings; converting them to little-endian bytes (the default for many `bigint`-to-bytes helpers) silently produces a wrong, full-length buffer that the contract will reject.
+2. **Zero-padding.** Every component is fixed-width: 32 bytes per coordinate. A coordinate whose value is smaller than `2^248` has leading zero bytes that **must** be present. Trimming leading zeros (so a number serializes to fewer than 32 bytes) yields a short `proofA`/`proofB`/`proofC` and the contract panics on length.
+3. **G2 coefficient order (`c1 || c0`).** `snarkjs` stores each `Fq2` value as `[c0, c1]`, but the verifier expects `c1` serialized before `c0`. You must swap the pair for both `x` and `y` of the G2 point. Emitting `c0 || c1` produces a 128-byte buffer of the right length that fails the pairing check — the hardest failure to debug because lengths look correct.
+4. **Dropping the projective coordinate.** `pi_a`, `pi_b`, and `pi_c` each carry a trailing projective component (`"1"`, or `["1","0"]` for G2). Only the affine `x` and `y` are encoded; including the projective coordinate overruns the fixed widths.
+
 ## Reference Example
 
 Reference proof bytes used by the current Testnet verifier:
