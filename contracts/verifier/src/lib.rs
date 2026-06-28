@@ -1,9 +1,9 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contracterror, contractimpl, contracttype,
     crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
-    vec, Bytes, BytesN, Env, TryFromVal, Vec,
+    vec, Address, Bytes, BytesN, Env, TryFromVal, Vec,
 };
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
@@ -61,24 +61,99 @@ const VK_IC1_G1: [u8; PROOF_A_LEN] = [
     55, 49, 89,
 ];
 
+#[contracttype]
+#[derive(Clone)]
+pub struct Limits {
+    pub max_calls: u32,
+    pub window_size: u32,
+}
+
+#[contracttype]
+enum DataKey {
+    Admin,
+    Limits,
+    CallCount(Address, u32),
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    RateLimitExceeded = 2,
+    InvalidWindowSize = 3,
+}
+
 #[contract]
 pub struct VerifierContract;
 
 #[contractimpl]
 impl VerifierContract {
+    pub fn __constructor(env: Env, admin: Address, max_calls: u32, window_size: u32) {
+        assert!(window_size > 0, "window_size must be positive");
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Limits, &Limits { max_calls, window_size });
+    }
+
+    pub fn limits(env: Env) -> Limits {
+        env.storage()
+            .instance()
+            .get(&DataKey::Limits)
+            .expect("contract is not initialized")
+    }
+
+    pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
+        if window_size == 0 {
+            return Err(Error::InvalidWindowSize);
+        }
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Limits, &Limits { max_calls, window_size });
+        Ok(())
+    }
+
     pub fn verify_proof(
         env: Env,
+        caller: Address,
         proof_a: Bytes,
         proof_b: Bytes,
         proof_c: Bytes,
         public_inputs: Vec<BytesN<32>>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
+        caller.require_auth();
+
+        let limits: Limits = env
+            .storage()
+            .instance()
+            .get(&DataKey::Limits)
+            .ok_or(Error::NotInitialized)?;
+
+        let ledger = env.ledger().sequence();
+        let window_start = ledger - (ledger % limits.window_size);
+        let count_key = DataKey::CallCount(caller.clone(), window_start);
+        let current: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let next = current + 1;
+        if next > limits.max_calls {
+            return Err(Error::RateLimitExceeded);
+        }
+        env.storage().instance().set(&count_key, &next);
+
         let proof_a = read_g1(&env, &proof_a, "proof_a");
         let proof_b = read_g2(&env, &proof_b, "proof_b");
         let proof_c = read_g1(&env, &proof_c, "proof_c");
 
         if public_inputs.len() != PUBLIC_INPUT_COUNT {
-            return false;
+            return Ok(false);
         }
 
         let vk_alpha = Bn254G1Affine::from_array(&env, &VK_ALPHA_G1);
@@ -91,10 +166,12 @@ impl VerifierContract {
         let public_input = Fr::from_bytes(public_inputs.get(0).unwrap());
         let vk_x = vk_ic0 + (vk_ic1 * public_input);
 
-        env.crypto().bn254().pairing_check(
+        let result = env.crypto().bn254().pairing_check(
             vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
             vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
-        )
+        );
+
+        Ok(result)
     }
 }
 
@@ -113,138 +190,4 @@ fn read_g2(env: &Env, bytes: &Bytes, label: &str) -> Bn254G2Affine {
 }
 
 #[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Address;
-
-    const VALID_PROOF_A: [u8; PROOF_A_LEN] = [
-        28, 159, 72, 150, 222, 218, 126, 226, 53, 93, 4, 80, 73, 92, 40, 120, 36, 194, 215, 167,
-        39, 53, 38, 203, 78, 55, 154, 43, 183, 51, 27, 239, 39, 116, 225, 204, 223, 113, 45, 75,
-        145, 63, 162, 251, 115, 169, 233, 211, 196, 17, 50, 95, 10, 96, 100, 87, 103, 45, 222,
-        46, 22, 79, 236, 207,
-    ];
-
-    const VALID_PROOF_B: [u8; PROOF_B_LEN] = [
-        1, 42, 5, 66, 163, 235, 37, 249, 221, 59, 28, 26, 28, 141, 222, 136, 44, 125, 57, 205, 174,
-        171, 120, 158, 215, 5, 37, 152, 128, 47, 109, 179, 10, 195, 151, 7, 203, 209, 91, 29, 216,
-        105, 99, 216, 134, 57, 249, 38, 63, 28, 61, 16, 237, 176, 106, 59, 106, 127, 132, 150,
-        173, 249, 24, 39, 37, 42, 7, 245, 29, 242, 177, 182, 170, 101, 22, 47, 23, 147, 59, 250,
-        162, 36, 95, 66, 122, 2, 75, 26, 188, 118, 101, 74, 47, 193, 255, 168, 11, 116, 62, 79, 44,
-        18, 181, 195, 110, 255, 73, 31, 99, 67, 197, 43, 29, 151, 157, 210, 34, 247, 134, 38, 31,
-        23, 4, 3, 49, 77, 27, 13,
-    ];
-
-    const VALID_PROOF_C: [u8; PROOF_A_LEN] = [
-        17, 201, 219, 26, 68, 41, 61, 217, 55, 131, 157, 11, 39, 31, 149, 251, 231, 172, 120, 223,
-        35, 49, 86, 11, 238, 214, 162, 152, 3, 170, 201, 25, 12, 55, 128, 235, 89, 16, 108, 55,
-        145, 211, 153, 105, 252, 163, 82, 244, 31, 20, 102, 144, 205, 165, 13, 28, 60, 128, 197,
-        222, 246, 69, 1, 222,
-    ];
-
-    const VALID_PUBLIC_INPUT: [u8; 32] = [
-        41, 23, 97, 0, 234, 169, 98, 189, 193, 254, 108, 101, 77, 106, 60, 19, 14, 150, 164, 209,
-        22, 139, 51, 132, 139, 137, 125, 197, 2, 130, 1, 51,
-    ];
-
-    fn client() -> (Env, VerifierContractClient<'static>) {
-        let env = Env::default();
-        let contract_id = env.register(VerifierContract, ());
-        let client = VerifierContractClient::new(&env, &contract_id);
-        (env, client)
-    }
-
-    fn valid_public_inputs(env: &Env) -> Vec<BytesN<32>> {
-        vec![env, BytesN::from_array(env, &VALID_PUBLIC_INPUT)]
-    }
-
-    #[test]
-    fn verify_proof_returns_true_for_valid_proof() {
-        let (env, client) = client();
-        let _caller = Address::generate(&env);
-
-        let result = client.verify_proof(
-            &Bytes::from_array(&env, &VALID_PROOF_A),
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
-        );
-
-        assert!(result);
-    }
-
-    #[test]
-    fn verify_proof_returns_false_for_tampered_proof_a() {
-        let (env, client) = client();
-        let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
-
-        let result = client.verify_proof(
-            &Bytes::from_array(&env, &tampered),
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
-        );
-
-        assert!(!result);
-    }
-
-    #[test]
-    fn verify_proof_returns_false_for_wrong_public_input() {
-        let (env, client) = client();
-        let wrong_public_input = vec![&env, BytesN::from_array(&env, &[0; 32])];
-
-        let result = client.verify_proof(
-            &Bytes::from_array(&env, &VALID_PROOF_A),
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &wrong_public_input,
-        );
-
-        assert!(!result);
-    }
-
-    #[test]
-    #[should_panic(expected = "proof_a must be 64 bytes")]
-    fn verify_proof_panics_on_wrong_proof_a_length() {
-        let (env, client) = client();
-
-        let proof_a = Bytes::from_array(&env, &[0; 63]);
-        client.verify_proof(
-            &proof_a,
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
-        );
-    }
-
-    #[test]
-    fn verify_proof_stays_within_default_test_resource_limits() {
-        let (env, client) = client();
-
-        let result = client.verify_proof(
-            &Bytes::from_array(&env, &VALID_PROOF_A),
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
-        );
-
-        assert!(result);
-
-        let resources = env.cost_estimate().resources();
-        let budget = env.cost_estimate().budget();
-
-        std::println!(
-            "verify_proof resource estimate: instructions={}, mem_bytes={}, cpu_cost={}, memory_cost={}",
-            resources.instructions,
-            resources.mem_bytes,
-            budget.cpu_instruction_cost(),
-            budget.memory_bytes_cost()
-        );
-
-        assert!(resources.instructions > 0);
-        assert!(budget.cpu_instruction_cost() > 0);
-        assert!(budget.memory_bytes_cost() > 0);
-    }
-}
+mod tests;
