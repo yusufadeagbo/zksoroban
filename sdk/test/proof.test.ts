@@ -59,3 +59,52 @@ test("formatProof throws typed errors for malformed public input", () => {
       error.code === SorobanZkErrorCode.INVALID_PUBLIC_INPUT
   );
 });
+
+test("error message includes the offending string value", () => {
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, ["not-a-field-element"]),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.message.includes("not-a-field-element")
+  );
+});
+
+test("error message includes type and value for non-string input", () => {
+  assert.throws(
+    () =>
+      formatProof(
+        {
+          ...VALID_SNARKJS_PROOF,
+          pi_a: [42 as unknown as string, VALID_SNARKJS_PROOF.pi_a[1], "1"]
+        },
+        VALID_PUBLIC_SIGNALS
+      ),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.message.includes("number") &&
+      error.message.includes("42")
+  );
+});
+
+test("error message truncates offending value at 64 chars", () => {
+  const longValue = "x".repeat(80);
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, [longValue]),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.message.includes("…") &&
+      !error.message.includes("x".repeat(65))
+  );
+});
+
+test("error message includes out-of-range value truncated at 64 chars", () => {
+  const overModulus =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495618";
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, [overModulus]),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.message.includes(overModulus.slice(0, 64)) &&
+      error.message.includes("…")
+  );
+});

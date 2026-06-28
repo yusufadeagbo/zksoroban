@@ -2,9 +2,9 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, Networks } from "@stellar/stellar-sdk";
 
-import { formatProof, poseidon, verifyOnChain } from "@zksoroban/sdk";
+import { ProofBundle, poseidon, verifyOnChain } from "@zksoroban/sdk";
 
 const snarkjs: any = require("snarkjs");
 
@@ -153,11 +153,22 @@ async function main(): Promise<void> {
   const calldata = formatProof(proof, publicSignals);
 
   log("submitting to the verifier contract...", "verbose");
+  const bundle: ProofBundle = {
+    proof,
+    publicSignals,
+    circuit: "poseidon_preimage",
+    generatedAt: new Date().toISOString(),
+    networkPassphrase: Networks.TESTNET
+  };
+
+  console.log(`circuit: ${bundle.circuit}`);
+  console.log(`generatedAt: ${bundle.generatedAt}`);
+
   const result = await verifyOnChain({
     rpcUrl: answers.rpcUrl,
     contractId: answers.contractId,
     keypair: Keypair.fromSecret(secretKey),
-    calldata
+    bundle
   });
 
   log(`txHash: ${result.txHash}`, "normal");

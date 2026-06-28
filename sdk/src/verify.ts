@@ -7,7 +7,11 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
+import { formatProof } from "./proof";
 import {
+  NetworkMismatchError,
+  ProofBundle,
+  SorobanProofCalldata,
   SorobanZkError,
   SorobanZkErrorCode,
   VerifyOptions,
@@ -68,10 +72,37 @@ function decodeReturnValueFromDiagnostics(
   return undefined;
 }
 
+export function assertBundleNetwork(bundle: ProofBundle, networkPassphrase: string): void {
+  if (bundle.networkPassphrase !== networkPassphrase) {
+    throw new NetworkMismatchError(bundle.networkPassphrase, networkPassphrase);
+  }
+}
+
+function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
+  if (opts.calldata) {
+    return opts.calldata;
+  }
+
+  if (opts.bundle) {
+    return formatProof(opts.bundle.proof, opts.bundle.publicSignals);
+  }
+
+  throw new SorobanZkError(
+    "verifyOnChain requires either calldata or a bundle",
+    SorobanZkErrorCode.INVALID_PROOF_FORMAT
+  );
+}
+
 export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
   try {
     const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
     const network = await server.getNetwork();
+
+    if (opts.bundle) {
+      assertBundleNetwork(opts.bundle, network.passphrase);
+    }
+
+    const calldata = resolveCalldata(opts);
     const account = await server.getAccount(opts.keypair.publicKey());
     const contract = new Contract(opts.contractId);
 
@@ -82,10 +113,10 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       .addOperation(
         contract.call(
           "verify_proof",
-          makeBytesScVal(opts.calldata.proofA),
-          makeBytesScVal(opts.calldata.proofB),
-          makeBytesScVal(opts.calldata.proofC),
-          makePublicInputsScVal(opts.calldata.publicInputs)
+          makeBytesScVal(calldata.proofA),
+          makeBytesScVal(calldata.proofB),
+          makeBytesScVal(calldata.proofC),
+          makePublicInputsScVal(calldata.publicInputs)
         )
       )
       .setTimeout(30)
