@@ -14,7 +14,7 @@ verify_proof(
   proof_b: Bytes,
   proof_c: Bytes,
   public_inputs: Vec<BytesN<32>>
-) -> bool
+) -> Result<bool, Error>
 ```
 
 The contract expects:
@@ -22,9 +22,11 @@ The contract expects:
 - `proof_a`: 64 bytes
 - `proof_b`: 128 bytes
 - `proof_c`: 64 bytes
-- `public_inputs[i]`: exactly 32 bytes each
+- `public_inputs`: exactly 2 entries, each exactly 32 bytes
+  - `public_inputs[0]`: the circuit commitment
+  - `public_inputs[1]`: `expiry_ledger` (see below)
 
-If any proof byte length is wrong, the contract panics during parsing. If the number of public inputs is wrong, the contract returns `false`.
+If any proof byte length is wrong, the contract panics during parsing. If the number of public inputs is wrong, the contract returns `Ok(false)`. If the proof has expired, the contract returns `Err(ProofExpired)`.
 
 ## Field and Curve Context
 
@@ -151,6 +153,36 @@ its byte encoding is:
 ```text
 29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133
 ```
+
+## Expiry Ledger (required public input)
+
+To limit replay, every submission carries a proof expiry as a second public input:
+
+```text
+public_inputs[1] = expiry_ledger
+```
+
+`expiry_ledger` is an unsigned 32-bit ledger sequence number, encoded as a 32-byte big-endian field element (the high 28 bytes are zero). The contract reads it and enforces:
+
+```text
+env.ledger().sequence() <= expiry_ledger
+```
+
+If the current ledger sequence is **greater than** `expiry_ledger`, the contract returns `Err(ProofExpired)`. A proof whose `expiry_ledger` equals the current sequence is still valid (the boundary is inclusive). The high 28 bytes must be zero; otherwise the contract treats the encoding as invalid and returns `Ok(false)`.
+
+The SDK appends this field when `formatProof` is given an `expiryLedger` argument:
+
+```ts
+formatProof(proof, publicSignals, expiryLedger)
+```
+
+For example, `expiryLedger = 1000` encodes as:
+
+```text
+00000000000000000000000000000000000000000000000000000000000003e8
+```
+
+Note that `expiry_ledger` is checked by the contract but is not bound into the Groth16 circuit (the reference circuit has a single commitment public input). It limits the replay window but does not cryptographically bind the expiry to the proof; an end-to-end binding would require a circuit that commits to the expiry.
 
 ## Size Summary
 

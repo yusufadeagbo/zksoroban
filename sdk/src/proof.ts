@@ -81,9 +81,12 @@ function encodePublicInputs(publicSignals: string[]): Buffer[] {
   );
 }
 
+const MAX_U32 = 0xffffffff;
+
 export function formatProof(
   proof: SnarkjsProof,
-  publicSignals: string[]
+  publicSignals: string[],
+  expiryLedger?: number
 ): SorobanProofCalldata {
   if (!proof || proof.protocol !== "groth16") {
     throw new SorobanZkError(
@@ -106,11 +109,24 @@ export function formatProof(
     );
   }
 
+  const publicInputs = encodePublicInputs(publicSignals);
+
+  if (expiryLedger !== undefined) {
+    if (!Number.isInteger(expiryLedger) || expiryLedger < 0 || expiryLedger > MAX_U32) {
+      throw new SorobanZkError(
+        "expiryLedger must be an unsigned 32-bit integer",
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+      );
+    }
+
+    publicInputs.push(bigintToBytes32(BigInt(expiryLedger)));
+  }
+
   const calldata = {
     proofA: encodeG1(proof.pi_a, "pi_a"),
     proofB: encodeG2(proof.pi_b, "pi_b"),
     proofC: encodeG1(proof.pi_c, "pi_c"),
-    publicInputs: encodePublicInputs(publicSignals)
+    publicInputs
   };
 
   if (calldata.proofA.length !== 64 || calldata.proofB.length !== 128 || calldata.proofC.length !== 64) {

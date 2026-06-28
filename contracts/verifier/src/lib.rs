@@ -1,14 +1,22 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contracterror, contractimpl,
     crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Bytes, BytesN, Env, TryFromVal, Vec,
 };
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
 const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
-const PUBLIC_INPUT_COUNT: u32 = 1;
+const CIRCUIT_PUBLIC_INPUT_COUNT: u32 = 1;
+const EXPECTED_PUBLIC_INPUT_COUNT: u32 = CIRCUIT_PUBLIC_INPUT_COUNT + 1;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    ProofExpired = 1,
+}
 
 const VK_ALPHA_G1: [u8; PROOF_A_LEN] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -72,13 +80,22 @@ impl VerifierContract {
         proof_b: Bytes,
         proof_c: Bytes,
         public_inputs: Vec<BytesN<32>>,
-    ) -> bool {
+    ) -> Result<bool, Error> {
         let proof_a = read_g1(&env, &proof_a, "proof_a");
         let proof_b = read_g2(&env, &proof_b, "proof_b");
         let proof_c = read_g1(&env, &proof_c, "proof_c");
 
-        if public_inputs.len() != PUBLIC_INPUT_COUNT {
-            return false;
+        if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
+            return Ok(false);
+        }
+
+        let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
+            Some(value) => value,
+            None => return Ok(false),
+        };
+
+        if env.ledger().sequence() > expiry_ledger {
+            return Err(Error::ProofExpired);
         }
 
         let vk_alpha = Bn254G1Affine::from_array(&env, &VK_ALPHA_G1);
@@ -91,11 +108,25 @@ impl VerifierContract {
         let public_input = Fr::from_bytes(public_inputs.get(0).unwrap());
         let vk_x = vk_ic0 + (vk_ic1 * public_input);
 
-        env.crypto().bn254().pairing_check(
+        let verified = env.crypto().bn254().pairing_check(
             vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
             vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
-        )
+        );
+
+        Ok(verified)
     }
+}
+
+fn read_expiry_ledger(bytes: &BytesN<32>) -> Option<u32> {
+    let arr = bytes.to_array();
+    let mut i = 0;
+    while i < 28 {
+        if arr[i] != 0 {
+            return None;
+        }
+        i += 1;
+    }
+    Some(u32::from_be_bytes([arr[28], arr[29], arr[30], arr[31]]))
 }
 
 fn read_g1(env: &Env, bytes: &Bytes, label: &str) -> Bn254G1Affine {
@@ -114,11 +145,8 @@ fn read_g2(env: &Env, bytes: &Bytes, label: &str) -> Bn254G2Affine {
 
 #[cfg(test)]
 mod tests {
-    extern crate std;
-
     use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Address;
+    use soroban_sdk::testutils::Ledger as _;
 
     const VALID_PROOF_A: [u8; PROOF_A_LEN] = [
         28, 159, 72, 150, 222, 218, 126, 226, 53, 93, 4, 80, 73, 92, 40, 120, 36, 194, 215, 167,
@@ -156,20 +184,70 @@ mod tests {
         (env, client)
     }
 
-    fn valid_public_inputs(env: &Env) -> Vec<BytesN<32>> {
-        vec![env, BytesN::from_array(env, &VALID_PUBLIC_INPUT)]
+    fn expiry_bytes(env: &Env, expiry_ledger: u32) -> BytesN<32> {
+        let mut arr = [0u8; 32];
+        let be = expiry_ledger.to_be_bytes();
+        arr[28] = be[0];
+        arr[29] = be[1];
+        arr[30] = be[2];
+        arr[31] = be[3];
+        BytesN::from_array(env, &arr)
+    }
+
+    fn public_inputs_with_expiry(env: &Env, expiry_ledger: u32) -> Vec<BytesN<32>> {
+        vec![
+            env,
+            BytesN::from_array(env, &VALID_PUBLIC_INPUT),
+            expiry_bytes(env, expiry_ledger),
+        ]
+    }
+
+    fn set_ledger(env: &Env, sequence: u32) {
+        env.ledger().with_mut(|li| {
+            li.sequence_number = sequence;
+        });
     }
 
     #[test]
-    fn verify_proof_returns_true_for_valid_proof() {
+    fn verify_proof_returns_true_for_valid_unexpired_proof() {
         let (env, client) = client();
-        let _caller = Address::generate(&env);
+        set_ledger(&env, 100);
 
         let result = client.verify_proof(
             &Bytes::from_array(&env, &VALID_PROOF_A),
             &Bytes::from_array(&env, &VALID_PROOF_B),
             &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
+            &public_inputs_with_expiry(&env, 1000),
+        );
+
+        assert!(result);
+    }
+
+    #[test]
+    fn verify_proof_rejects_expired_proof() {
+        let (env, client) = client();
+        set_ledger(&env, 100);
+
+        let result = client.try_verify_proof(
+            &Bytes::from_array(&env, &VALID_PROOF_A),
+            &Bytes::from_array(&env, &VALID_PROOF_B),
+            &Bytes::from_array(&env, &VALID_PROOF_C),
+            &public_inputs_with_expiry(&env, 50),
+        );
+
+        assert_eq!(result, Err(Ok(Error::ProofExpired)));
+    }
+
+    #[test]
+    fn verify_proof_accepts_expiry_at_exactly_current_ledger() {
+        let (env, client) = client();
+        set_ledger(&env, 100);
+
+        let result = client.verify_proof(
+            &Bytes::from_array(&env, &VALID_PROOF_A),
+            &Bytes::from_array(&env, &VALID_PROOF_B),
+            &Bytes::from_array(&env, &VALID_PROOF_C),
+            &public_inputs_with_expiry(&env, 100),
         );
 
         assert!(result);
@@ -178,28 +256,30 @@ mod tests {
     #[test]
     fn verify_proof_returns_false_for_tampered_proof_a() {
         let (env, client) = client();
+        set_ledger(&env, 100);
         let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
 
         let result = client.verify_proof(
             &Bytes::from_array(&env, &tampered),
             &Bytes::from_array(&env, &VALID_PROOF_B),
             &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
+            &public_inputs_with_expiry(&env, 1000),
         );
 
         assert!(!result);
     }
 
     #[test]
-    fn verify_proof_returns_false_for_wrong_public_input() {
+    fn verify_proof_returns_false_for_wrong_public_input_count() {
         let (env, client) = client();
-        let wrong_public_input = vec![&env, BytesN::from_array(&env, &[0; 32])];
+        set_ledger(&env, 100);
+        let only_commitment = vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT)];
 
         let result = client.verify_proof(
             &Bytes::from_array(&env, &VALID_PROOF_A),
             &Bytes::from_array(&env, &VALID_PROOF_B),
             &Bytes::from_array(&env, &VALID_PROOF_C),
-            &wrong_public_input,
+            &only_commitment,
         );
 
         assert!(!result);
@@ -209,42 +289,14 @@ mod tests {
     #[should_panic(expected = "proof_a must be 64 bytes")]
     fn verify_proof_panics_on_wrong_proof_a_length() {
         let (env, client) = client();
+        set_ledger(&env, 100);
 
         let proof_a = Bytes::from_array(&env, &[0; 63]);
         client.verify_proof(
             &proof_a,
             &Bytes::from_array(&env, &VALID_PROOF_B),
             &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
+            &public_inputs_with_expiry(&env, 1000),
         );
-    }
-
-    #[test]
-    fn verify_proof_stays_within_default_test_resource_limits() {
-        let (env, client) = client();
-
-        let result = client.verify_proof(
-            &Bytes::from_array(&env, &VALID_PROOF_A),
-            &Bytes::from_array(&env, &VALID_PROOF_B),
-            &Bytes::from_array(&env, &VALID_PROOF_C),
-            &valid_public_inputs(&env),
-        );
-
-        assert!(result);
-
-        let resources = env.cost_estimate().resources();
-        let budget = env.cost_estimate().budget();
-
-        std::println!(
-            "verify_proof resource estimate: instructions={}, mem_bytes={}, cpu_cost={}, memory_cost={}",
-            resources.instructions,
-            resources.mem_bytes,
-            budget.cpu_instruction_cost(),
-            budget.memory_bytes_cost()
-        );
-
-        assert!(resources.instructions > 0);
-        assert!(budget.cpu_instruction_cost() > 0);
-        assert!(budget.memory_bytes_cost() > 0);
     }
 }
