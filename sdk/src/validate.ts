@@ -9,6 +9,7 @@ const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const MAX_32_BYTE_VALUE = 1n << 256n;
 const DECIMAL_PATTERN = /^[0-9]+$/;
+const DECIMAL_OR_HEX_PATTERN = /^(0x[0-9a-fA-F]+|[0-9]+)$/;
 const MAX_VALUE_DISPLAY_LEN = 64;
 
 function describeValue(value: unknown): string {
@@ -78,10 +79,10 @@ export function validatePublicSignals(publicSignals: string[]): void {
       );
     }
 
-    if (!DECIMAL_PATTERN.test(signal)) {
+    if (!DECIMAL_OR_HEX_PATTERN.test(signal)) {
       throw new ZkInputError(
         field,
-        "is not a decimal string",
+        "is not a decimal or hex string",
         SorobanZkErrorCode.INVALID_PUBLIC_INPUT,
         describeValue(signal)
       );
