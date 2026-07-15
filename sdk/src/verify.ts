@@ -95,7 +95,8 @@ function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
 }
 
 export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
-  validateCalldata(opts.calldata);
+  const calldata = resolveCalldata(opts);
+  validateCalldata(calldata);
 
   try {
     const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
@@ -105,7 +106,6 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       assertBundleNetwork(opts.bundle, network.passphrase);
     }
 
-    const calldata = resolveCalldata(opts);
     const account = await server.getAccount(opts.keypair.publicKey());
     const contract = new Contract(opts.contractId);
 

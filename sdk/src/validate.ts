@@ -9,6 +9,14 @@ const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const MAX_32_BYTE_VALUE = 1n << 256n;
 const DECIMAL_PATTERN = /^[0-9]+$/;
+const MAX_VALUE_DISPLAY_LEN = 64;
+
+function describeValue(value: unknown): string {
+  const str = typeof value === "string" ? value : String(value);
+  return str.length > MAX_VALUE_DISPLAY_LEN
+    ? `${str.slice(0, MAX_VALUE_DISPLAY_LEN)}…`
+    : str;
+}
 
 function assertArray(value: unknown, field: string, minLength: number): unknown[] {
   if (!Array.isArray(value)) {
@@ -27,7 +35,12 @@ function assertArray(value: unknown, field: string, minLength: number): unknown[
 
 function assertProofFieldElement(value: unknown, field: string): void {
   if (typeof value !== "string") {
-    throw new ZkInputError(field, `is not a string (received ${typeof value})`);
+    throw new ZkInputError(
+      field,
+      `is not a string (received ${typeof value})`,
+      SorobanZkErrorCode.INVALID_PROOF_FORMAT,
+      describeValue(value)
+    );
   }
 
   if (!DECIMAL_PATTERN.test(value)) {
@@ -35,7 +48,12 @@ function assertProofFieldElement(value: unknown, field: string): void {
   }
 
   if (BigInt(value) >= BN254_FIELD_MODULUS) {
-    throw new ZkInputError(field, "exceeds the BN254 field size");
+    throw new ZkInputError(
+      field,
+      "exceeds the BN254 field size",
+      SorobanZkErrorCode.INVALID_PROOF_FORMAT,
+      describeValue(value)
+    );
   }
 }
 
@@ -55,7 +73,8 @@ export function validatePublicSignals(publicSignals: string[]): void {
       throw new ZkInputError(
         field,
         `is not a string (received ${typeof signal})`,
-        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT,
+        describeValue(signal)
       );
     }
 
@@ -63,7 +82,8 @@ export function validatePublicSignals(publicSignals: string[]): void {
       throw new ZkInputError(
         field,
         "is not a decimal string",
-        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT,
+        describeValue(signal)
       );
     }
 
@@ -71,7 +91,8 @@ export function validatePublicSignals(publicSignals: string[]): void {
       throw new ZkInputError(
         field,
         "does not fit in 32 bytes",
-        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT,
+        describeValue(signal)
       );
     }
   });

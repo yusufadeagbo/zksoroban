@@ -58,10 +58,14 @@ export class ZkInputError extends SorobanZkError {
   constructor(
     public field: string,
     public reason: string,
-    code: SorobanZkErrorCode = SorobanZkErrorCode.INVALID_PROOF_FORMAT
+    code: SorobanZkErrorCode = SorobanZkErrorCode.INVALID_PROOF_FORMAT,
+    detail?: string
   ) {
-    super(`${field} ${reason}`, code);
+    super(`${field} ${reason}${detail ? ` (${detail})` : ""}`, code);
     this.name = "ZkInputError";
+  }
+}
+
 export class NetworkMismatchError extends SorobanZkError {
   constructor(public expected: string, public actual: string) {
     super(
