@@ -1,0 +1,6 @@
+command: verify
+calldata encoding: ok
+proofA bytes: 64
+proofB bytes: 128
+proofC bytes: 64
+public inputs: 1

@@ -1,0 +1,8 @@
+command: inspect
+circuit: poseidon_preimage
+generatedAt: 2026-05-29T00:00:00.000Z
+networkPassphrase: Test SDF Network ; September 2015
+proof protocol: groth16
+public signals:
+  [0] 18586133768512220936620570745912940619677854269274689475585506675881198879027
+calldata bytes: 256

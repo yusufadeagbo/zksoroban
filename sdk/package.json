@@ -11,7 +11,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && tsx --test test/**/*.ts"
+    "test": "npm run build && tsx --test test/**/*.ts",
+    "test:golden": "tsx scripts/golden.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.3.0",
