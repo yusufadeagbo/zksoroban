@@ -5,6 +5,12 @@ The first developer SDK and reference verifier contract for zero-knowledge proof
 Testnet verifier contract:
 `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`
 
+## New to ZK proofs?
+
+Follow the step-by-step tutorial: [docs/tutorial-first-proof.md](docs/tutorial-first-proof.md)
+
+It covers prerequisites, Testnet account funding, exact commands, expected output, and a troubleshooting section.
+
 ## Quick Start
 
 1. Install prerequisites: Node.js 22+, Rust, Stellar CLI, and `circom`.

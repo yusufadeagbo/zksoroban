@@ -1,0 +1,5 @@
+command: estimate-fee
+proof bytes: 256
+public input bytes: 32
+total bytes: 288
+estimated fee (stroops): 2116
