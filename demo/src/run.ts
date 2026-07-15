@@ -4,7 +4,7 @@ import readline from "node:readline";
 
 import { Keypair, Networks } from "@stellar/stellar-sdk";
 
-import { ProofBundle, poseidon, verifyOnChain } from "@zksoroban/sdk";
+import { ProofBundle, formatProof, poseidon, verifyOnChain } from "@zksoroban/sdk";
 
 const snarkjs: any = require("snarkjs");
 
