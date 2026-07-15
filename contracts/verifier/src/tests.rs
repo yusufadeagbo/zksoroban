@@ -1,7 +1,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Vec};
 
 const VALID_PROOF_A: [u8; PROOF_A_LEN] = [
@@ -33,10 +33,7 @@ const VALID_PUBLIC_INPUT: [u8; 32] = [
     22, 139, 51, 132, 139, 137, 125, 197, 2, 130, 1, 51,
 ];
 
-fn setup(
-    max_calls: u32,
-    window_size: u32,
-) -> (Env, Address, VerifierContractClient<'static>) {
+fn setup(max_calls: u32, window_size: u32) -> (Env, Address, VerifierContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
@@ -45,25 +42,76 @@ fn setup(
     (env, admin, client)
 }
 
-fn valid_public_inputs(env: &Env) -> Vec<BytesN<32>> {
-    vec![env, BytesN::from_array(env, &VALID_PUBLIC_INPUT)]
+fn expiry_bytes(env: &Env, expiry_ledger: u32) -> BytesN<32> {
+    let mut arr = [0u8; 32];
+    let be = expiry_ledger.to_be_bytes();
+    arr[28] = be[0];
+    arr[29] = be[1];
+    arr[30] = be[2];
+    arr[31] = be[3];
+    BytesN::from_array(env, &arr)
 }
 
-fn call_valid(env: &Env, client: &VerifierContractClient, caller: &Address) -> bool {
+fn public_inputs_with_expiry(env: &Env, expiry_ledger: u32) -> Vec<BytesN<32>> {
+    vec![
+        env,
+        BytesN::from_array(env, &VALID_PUBLIC_INPUT),
+        expiry_bytes(env, expiry_ledger),
+    ]
+}
+
+fn call_with_expiry(
+    env: &Env,
+    client: &VerifierContractClient,
+    caller: &Address,
+    expiry_ledger: u32,
+) -> bool {
     client.verify_proof(
         caller,
         &Bytes::from_array(env, &VALID_PROOF_A),
         &Bytes::from_array(env, &VALID_PROOF_B),
         &Bytes::from_array(env, &VALID_PROOF_C),
-        &valid_public_inputs(env),
+        &public_inputs_with_expiry(env, expiry_ledger),
     )
 }
 
+fn call_valid(env: &Env, client: &VerifierContractClient, caller: &Address) -> bool {
+    call_with_expiry(env, client, caller, u32::MAX)
+}
+
 #[test]
-fn verify_proof_returns_true_for_valid_proof() {
+fn verify_proof_returns_true_for_valid_unexpired_proof() {
     let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
     let caller = Address::generate(&env);
-    assert!(call_valid(&env, &client, &caller));
+
+    assert!(call_with_expiry(&env, &client, &caller, 1000));
+}
+
+#[test]
+fn verify_proof_rejects_expired_proof() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, 50),
+    );
+
+    assert_eq!(result, Err(Ok(Error::ProofExpired)));
+}
+
+#[test]
+fn verify_proof_accepts_expiry_at_exactly_current_ledger() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    assert!(call_with_expiry(&env, &client, &caller, 100));
 }
 
 #[test]
@@ -77,27 +125,42 @@ fn verify_proof_returns_false_for_tampered_proof_a() {
         &Bytes::from_array(&env, &tampered),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
-        &valid_public_inputs(&env),
+        &public_inputs_with_expiry(&env, u32::MAX),
     );
 
     assert!(!result);
 }
 
 #[test]
-fn verify_proof_returns_false_for_wrong_public_input() {
+fn verify_proof_returns_false_for_wrong_public_input_count() {
     let (env, _admin, client) = setup(10, 100);
     let caller = Address::generate(&env);
-    let wrong = vec![&env, BytesN::from_array(&env, &[0; 32])];
+    let only_commitment = vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT)];
 
     let result = client.verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
-        &wrong,
+        &only_commitment,
     );
 
     assert!(!result);
+}
+
+#[test]
+#[should_panic(expected = "proof_a must be 64 bytes")]
+fn verify_proof_panics_on_wrong_proof_a_length() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &[0; 63]),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
 }
 
 #[test]
@@ -120,7 +183,7 @@ fn limit_hit_returns_error() {
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
-        &valid_public_inputs(&env),
+        &public_inputs_with_expiry(&env, u32::MAX),
     );
 
     assert_eq!(third, Err(Ok(Error::RateLimitExceeded)));
@@ -138,7 +201,7 @@ fn window_expiry_resets_counter() {
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
-        &valid_public_inputs(&env),
+        &public_inputs_with_expiry(&env, u32::MAX),
     );
     assert_eq!(exceeded, Err(Ok(Error::RateLimitExceeded)));
 
@@ -172,19 +235,4 @@ fn admin_can_update_limits() {
     let caller = Address::generate(&env);
     assert!(call_valid(&env, &client, &caller));
     assert!(call_valid(&env, &client, &caller));
-}
-
-#[test]
-#[should_panic(expected = "proof_a must be 64 bytes")]
-fn verify_proof_panics_on_wrong_proof_a_length() {
-    let (env, _admin, client) = setup(10, 100);
-    let caller = Address::generate(&env);
-
-    client.verify_proof(
-        &caller,
-        &Bytes::from_array(&env, &[0; 63]),
-        &Bytes::from_array(&env, &VALID_PROOF_B),
-        &Bytes::from_array(&env, &VALID_PROOF_C),
-        &valid_public_inputs(&env),
-    );
 }

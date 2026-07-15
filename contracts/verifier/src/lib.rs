@@ -8,7 +8,8 @@ use soroban_sdk::{
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
 const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
-const PUBLIC_INPUT_COUNT: u32 = 1;
+const CIRCUIT_PUBLIC_INPUT_COUNT: u32 = 1;
+const EXPECTED_PUBLIC_INPUT_COUNT: u32 = CIRCUIT_PUBLIC_INPUT_COUNT + 1;
 
 const VK_ALPHA_G1: [u8; PROOF_A_LEN] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -82,6 +83,7 @@ pub enum Error {
     NotInitialized = 1,
     RateLimitExceeded = 2,
     InvalidWindowSize = 3,
+    ProofExpired = 4,
 }
 
 #[contract]
@@ -152,8 +154,17 @@ impl VerifierContract {
         let proof_b = read_g2(&env, &proof_b, "proof_b");
         let proof_c = read_g1(&env, &proof_c, "proof_c");
 
-        if public_inputs.len() != PUBLIC_INPUT_COUNT {
+        if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
             return Ok(false);
+        }
+
+        let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
+            Some(value) => value,
+            None => return Ok(false),
+        };
+
+        if ledger > expiry_ledger {
+            return Err(Error::ProofExpired);
         }
 
         let vk_alpha = Bn254G1Affine::from_array(&env, &VK_ALPHA_G1);
@@ -166,13 +177,25 @@ impl VerifierContract {
         let public_input = Fr::from_bytes(public_inputs.get(0).unwrap());
         let vk_x = vk_ic0 + (vk_ic1 * public_input);
 
-        let result = env.crypto().bn254().pairing_check(
+        let verified = env.crypto().bn254().pairing_check(
             vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
             vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
         );
 
-        Ok(result)
+        Ok(verified)
     }
+}
+
+fn read_expiry_ledger(bytes: &BytesN<32>) -> Option<u32> {
+    let arr = bytes.to_array();
+    let mut i = 0;
+    while i < 28 {
+        if arr[i] != 0 {
+            return None;
+        }
+        i += 1;
+    }
+    Some(u32::from_be_bytes([arr[28], arr[29], arr[30], arr[31]]))
 }
 
 fn read_g1(env: &Env, bytes: &Bytes, label: &str) -> Bn254G1Affine {
