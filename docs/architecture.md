@@ -118,6 +118,38 @@ This is the strongest practical test in the repo because it exercises:
 - Soroban transaction submission
 - the deployed verifier contract
 
+## Verifying Key Registry
+
+The single-circuit verifier hardcodes one verifying key. The registry contract in `contracts/registry/` generalizes this so multiple circuits can be supported without redeploying.
+
+The registry stores a verifying key per circuit ID and dispatches verification to the matching key:
+
+```text
+register_circuit(id, vk)         verify_proof(id, proof, public_inputs)
+        |                                   |
+        v                                   v
+  admin.require_auth()              lookup vk by circuit id
+        |                                   |
+        v                          +--------+--------+
+  store vk under                   |                 |
+  Circuit(id)                  found vk         unknown id
+        |                          |                 |
+        v                          v                 v
+  persistent storage      reconstruct vk_x      return false
+                          + BN254 pairing        (no panic)
+                                   |
+                                   v
+                            bool result
+```
+
+Key properties:
+
+- `register_circuit(id, vk)` is gated by the admin address configured at construction.
+- `verify_proof(id, ...)` returns `false` for unknown circuit IDs instead of panicking.
+- The verifying key is variable-length: it carries `alpha`, `beta`, `gamma`, `delta`, and an `ic` vector whose length is one greater than the circuit's public input count.
+
+Migrating the existing single-circuit verifier and deploying the registry to Testnet are tracked separately.
+
 ## Design Choices
 
 Why the verifier is stateless:

@@ -14,11 +14,20 @@ export interface SorobanProofCalldata {
   publicInputs: Buffer[];
 }
 
+export interface ProofBundle {
+  proof: SnarkjsProof;
+  publicSignals: string[];
+  circuit: string;
+  generatedAt: string;
+  networkPassphrase: string;
+}
+
 export interface VerifyOptions {
   rpcUrl: string;
   contractId: string;
   keypair: Keypair;
-  calldata: SorobanProofCalldata;
+  calldata?: SorobanProofCalldata;
+  bundle?: ProofBundle;
 }
 
 export interface VerifyResult {
@@ -34,13 +43,24 @@ export enum SorobanZkErrorCode {
   CONTRACT_INVOCATION_FAILED = "CONTRACT_INVOCATION_FAILED",
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
-  RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
+  RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
+  NETWORK_MISMATCH = "NETWORK_MISMATCH"
 }
 
 export class SorobanZkError extends Error {
   constructor(message: string, public code: SorobanZkErrorCode) {
     super(message);
     this.name = "SorobanZkError";
+  }
+}
+
+export class NetworkMismatchError extends SorobanZkError {
+  constructor(public expected: string, public actual: string) {
+    super(
+      `ProofBundle targets network "${expected}" but the configured network is "${actual}"`,
+      SorobanZkErrorCode.NETWORK_MISMATCH
+    );
+    this.name = "NetworkMismatchError";
   }
 }
 

@@ -4,7 +4,8 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "start": "ts-node src/run.ts"
+    "start": "ts-node src/run.ts",
+    "demo": "ts-node src/run.ts"
   },
   "dependencies": {
     "@zksoroban/sdk": "file:../sdk",

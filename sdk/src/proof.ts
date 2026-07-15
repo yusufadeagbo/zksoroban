@@ -8,14 +8,31 @@ import {
 const BN254_FIELD_MODULUS =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
-function parseFieldElement(value: string, code: SorobanZkErrorCode, label: string): bigint {
-  if (typeof value !== "string" || !/^(0x[0-9a-fA-F]+|[0-9]+)$/.test(value)) {
-    throw new SorobanZkError(`${label} must be a decimal or hex string`, code);
+function truncate(s: string): string {
+  return s.length > 64 ? s.slice(0, 64) + "…" : s;
+}
+
+function parseFieldElement(value: unknown, code: SorobanZkErrorCode, label: string): bigint {
+  if (typeof value !== "string") {
+    throw new SorobanZkError(
+      `${label} must be a decimal or hex string, got ${typeof value}: ${truncate(String(value))}`,
+      code
+    );
+  }
+
+  if (!/^(0x[0-9a-fA-F]+|[0-9]+)$/.test(value)) {
+    throw new SorobanZkError(
+      `${label} must be a decimal or hex string, got: "${truncate(value)}"`,
+      code
+    );
   }
 
   const parsed = BigInt(value);
   if (parsed < 0n || parsed >= BN254_FIELD_MODULUS) {
-    throw new SorobanZkError(`${label} is outside the BN254 field`, code);
+    throw new SorobanZkError(
+      `${label} is outside the BN254 field: ${truncate(value)}`,
+      code
+    );
   }
 
   return parsed;
