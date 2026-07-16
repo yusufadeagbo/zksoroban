@@ -6,7 +6,6 @@ coverage/
 .DS_Store
 target/
 .stellar/
-Cargo.lock
 test_snapshots/
 circuits/poseidon_preimage/build/
 circuits/poseidon_preimage/setup/*.ptau
