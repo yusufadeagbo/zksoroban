@@ -9,5 +9,5 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "Phase 2 and Phase 3 will add testnet integration execution here."
