@@ -22,6 +22,23 @@ Before submitting changes:
 - The current contract hardcodes one circuit's verifying key.
 - The setup artifacts in `circuits/poseidon_preimage/setup/` are testnet-only reference artifacts, not production ceremony outputs.
 
+## Pull Request Checklist
+
+Every PR is pre-filled with the checklist in
+[`.github/pull_request_template.md`](.github/pull_request_template.md). Each
+item maps directly to a Development Expectation above:
+
+- **Tests added or updated** — matches items 1–2.
+- **`npm run lint` passes** — the SDK and demo TypeScript must type-check;
+  this is what caught a real missing-import bug that had shipped silently
+  because neither package had a lint step before.
+- **`cargo test` passes** — covers both `contracts/verifier/` and
+  `contracts/registry/`.
+- **Docs updated, if behavior changed** — matches item 4.
+- **`docs/proof-format.md` updated, if proof byte encoding changed** —
+  matches item 4 specifically for encoding changes, which are easy to miss
+  since they don't fail any test on their own.
+
 ## Pull Request Guidance
 
 Good changes for this repository:
