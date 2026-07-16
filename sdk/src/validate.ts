@@ -96,6 +96,15 @@ export function validatePublicSignals(publicSignals: string[]): void {
         describeValue(signal)
       );
     }
+
+    if (BigInt(signal) >= BN254_FIELD_MODULUS) {
+      throw new ZkInputError(
+        field,
+        "exceeds the BN254 field size",
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT,
+        describeValue(signal)
+      );
+    }
   });
 }
 
