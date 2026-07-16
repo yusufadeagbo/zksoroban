@@ -25,7 +25,7 @@ jobs:
           - language: javascript-typescript
             build-mode: none
           - language: rust
-            build-mode: manual
+            build-mode: none
 
     steps:
       - name: Checkout repository
@@ -36,12 +36,6 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-
-      - name: Build Rust contracts
-        if: matrix.language == 'rust'
-        run: |
-          cargo build --manifest-path contracts/verifier/Cargo.toml --locked
-          cargo build --manifest-path contracts/registry/Cargo.toml --locked
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
