@@ -28,3 +28,24 @@ The `.github/workflows/milestone.yml` workflow runs whenever a label is added to
 The workflow has `issues: write` permission only and uses the built-in `GITHUB_TOKEN`. It does not create milestones or perform any other triage — milestone creation and sprint planning remain manual.
 
 To move an issue into the current sprint, add the `wave-sprint` label and the milestone is assigned automatically.
+
+## Reviewing Dependabot PRs
+
+Dependabot opens weekly PRs against `sdk/`, `demo/`, `contracts/verifier/`,
+`contracts/registry/`, and the repo's GitHub Actions, each labelled
+`dependencies`. None of them auto-merge. Before merging one:
+
+- **npm updates**: check the linked changelog for breaking changes, then
+  confirm CI's `sdk` or `demo` job passes on the PR.
+- **cargo updates**: pay particular attention to `soroban-sdk` and its
+  transitive dependencies — this ecosystem has had real, recent version-skew
+  breakage (see the CI workflow's contract job, which pins a working
+  dependency set in `Cargo.lock`; a Dependabot update that bumps past a
+  compatible version needs the same verification this repo's maintainers did
+  when first pinning it, not just a passing build).
+- **github-actions updates**: skim the diff for permission or trigger
+  changes before merging; these run with repo-level access.
+
+A PATCH-level update with a green CI run is normally safe to merge as-is.
+MINOR or MAJOR updates should get a manual look at what changed, even when
+CI passes.
