@@ -1,6 +1,7 @@
 # zksoroban
 
 [![ci](https://github.com/yusufadeagbo/zksoroban/actions/workflows/ci.yml/badge.svg)](https://github.com/yusufadeagbo/zksoroban/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/yusufadeagbo/zksoroban/actions/workflows/codeql.yml/badge.svg)](https://github.com/yusufadeagbo/zksoroban/actions/workflows/codeql.yml)
 
 The first developer SDK and reference verifier contract for zero-knowledge proofs on Stellar, built on Protocol 25's native BN254 and Poseidon host functions.
 
