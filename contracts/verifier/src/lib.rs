@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype,
-    crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
+    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, TryFromVal, Vec,
 };
 
@@ -174,7 +174,7 @@ impl VerifierContract {
         let vk_ic0 = Bn254G1Affine::from_array(&env, &VK_IC0_G1);
         let vk_ic1 = Bn254G1Affine::from_array(&env, &VK_IC1_G1);
 
-        let public_input = Fr::from_bytes(public_inputs.get(0).unwrap());
+        let public_input = Bn254Fr::from_bytes(public_inputs.get(0).unwrap());
         let vk_x = vk_ic0 + (vk_ic1 * public_input);
 
         let verified = env.crypto().bn254().pairing_check(

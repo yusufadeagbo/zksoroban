@@ -84,20 +84,49 @@ The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at 
 
 ## Contract Layer
 
-The Soroban verifier contract is also stateless. It stores no keys, proofs, or nullifiers.
+The Soroban verifier contract stores no proofs or nullifiers, but it is
+no longer fully stateless: it holds an admin address and per-caller
+rate-limit state (see Auth Model below).
 
 The contract:
 
-1. parses `proof_a`, `proof_b`, `proof_c`
-2. parses the public input field element
-3. reconstructs `vk_x = IC[0] + IC[1] * public_input`
-4. runs the Groth16 BN254 pairing equation
-5. returns `true` or `false`
+1. requires the caller's own Soroban auth
+2. enforces a per-caller, per-window rate limit
+3. parses `proof_a`, `proof_b`, `proof_c`
+4. parses the public input field element and the `expiry_ledger` field,
+   rejecting proofs whose expiry has already passed
+5. reconstructs `vk_x = IC[0] + IC[1] * public_input`
+6. runs the Groth16 BN254 pairing equation
+7. returns `true` or `false`
 
 The verifying key is hardcoded for the reference circuit. That keeps the MVP small and auditable.
 
 Current Testnet deployment:
 `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`
+
+### Auth Model
+
+`verify_proof` calls `caller.require_auth()` unconditionally — every
+call must be authorized by the address passed as `caller`, not merely
+submitted by it. This means:
+
+- An attacker cannot attribute rate-limit usage, or a successful
+  verification, to an address that did not itself sign off on this
+  specific invocation.
+- Authorization is separate from *who pays for and submits* the
+  transaction — Soroban's auth framework is meta-transaction friendly,
+  so a relayer can submit on a caller's behalf as long as the caller
+  supplied a valid auth entry.
+
+`set_limits` similarly requires the *stored* admin address's auth,
+looked up from contract storage — not whatever address happens to be
+passed as an argument.
+
+There is no allowlist/permission-tiering above this: any address that
+can produce a valid Soroban auth entry for itself can call
+`verify_proof`, subject only to the rate limit. See
+[`docs/security.md`](security.md) for the full threat checklist this
+auth model was evaluated against.
 
 ## Demo Layer
 
@@ -152,7 +181,8 @@ Migrating the existing single-circuit verifier and deploying the registry to Tes
 
 ## Design Choices
 
-Why the verifier is stateless:
+Why the verifier keeps its state minimal (admin + rate-limit counters,
+nothing proof- or nullifier-related):
 
 - simpler to audit
 - cheaper to invoke

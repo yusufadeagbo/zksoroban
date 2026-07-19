@@ -18,9 +18,20 @@ Before submitting changes:
 
 ## Scope Notes
 
-- The current verifier is intentionally stateless.
+- The current verifier keeps state to a minimum (admin address, rate-limit
+  counters) — see [`docs/security.md`](docs/security.md) for exactly what
+  it does and does not guarantee before changing its auth or storage model.
 - The current contract hardcodes one circuit's verifying key.
 - The setup artifacts in `circuits/poseidon_preimage/setup/` are testnet-only reference artifacts, not production ceremony outputs.
+
+## Security
+
+Read [`docs/security.md`](docs/security.md) before modifying
+`contracts/verifier/src/lib.rs` — it has a checklist of threats already
+evaluated against the current implementation (auth bypass, storage
+growth, replay, reentrancy) and states plainly what this contract does
+and does not protect against. If your change affects any of those
+areas, update the checklist's verdicts in the same PR.
 
 ## Pull Request Checklist
 

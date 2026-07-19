@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
+    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, TryFromVal, Vec,
 };
 
@@ -84,7 +84,7 @@ impl RegistryContract {
 
         let mut vk_x = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
         for i in 0..public_inputs.len() {
-            let input = Fr::from_bytes(public_inputs.get(i).unwrap());
+            let input = Bn254Fr::from_bytes(public_inputs.get(i).unwrap());
             let ic = Bn254G1Affine::from_bytes(vk.ic.get(i + 1).unwrap());
             vk_x = vk_x + (ic * input);
         }

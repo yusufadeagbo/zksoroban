@@ -236,3 +236,32 @@ fn admin_can_update_limits() {
     assert!(call_valid(&env, &client, &caller));
     assert!(call_valid(&env, &client, &caller));
 }
+
+// The tests above all use setup(), which calls env.mock_all_auths() —
+// meaning require_auth() succeeds for every address unconditionally,
+// including these two negative cases if run through that helper. These
+// use a bare Env with no auth mocked at all, so require_auth() genuinely
+// has nothing to authorize against and traps.
+
+#[test]
+#[should_panic]
+fn verify_proof_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    call_valid(&env, &client, &caller);
+}
+
+#[test]
+#[should_panic]
+fn set_limits_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32));
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    client.set_limits(&5, &50);
+}
