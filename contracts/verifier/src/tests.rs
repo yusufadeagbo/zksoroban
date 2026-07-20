@@ -2,7 +2,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, String, Vec};
 
 const VALID_PROOF_A: [u8; PROOF_A_LEN] = [
     28, 159, 72, 150, 222, 218, 126, 226, 53, 93, 4, 80, 73, 92, 40, 120, 36, 194, 215, 167,
@@ -77,6 +77,12 @@ fn call_with_expiry(
 
 fn call_valid(env: &Env, client: &VerifierContractClient, caller: &Address) -> bool {
     call_with_expiry(env, client, caller, u32::MAX)
+}
+
+#[test]
+fn version_returns_the_crate_version() {
+    let (env, _admin, client) = setup(10, 100);
+    assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

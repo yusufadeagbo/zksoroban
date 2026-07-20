@@ -3,13 +3,14 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
-    vec, Address, Bytes, BytesN, Env, TryFromVal, Vec,
+    vec, Address, Bytes, BytesN, Env, String, TryFromVal, Vec,
 };
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
 const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
 const CIRCUIT_PUBLIC_INPUT_COUNT: u32 = 1;
 const EXPECTED_PUBLIC_INPUT_COUNT: u32 = CIRCUIT_PUBLIC_INPUT_COUNT + 1;
+const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const VK_ALPHA_G1: [u8; PROOF_A_LEN] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -104,6 +105,10 @@ impl VerifierContract {
             .instance()
             .get(&DataKey::Limits)
             .expect("contract is not initialized")
+    }
+
+    pub fn version(env: Env) -> String {
+        String::from_str(&env, CONTRACT_VERSION)
     }
 
     pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
