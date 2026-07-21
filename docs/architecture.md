@@ -177,7 +177,31 @@ Key properties:
 - `verify_proof(id, ...)` returns `false` for unknown circuit IDs instead of panicking.
 - The verifying key is variable-length: it carries `alpha`, `beta`, `gamma`, `delta`, and an `ic` vector whose length is one greater than the circuit's public input count.
 
-Migrating the existing single-circuit verifier and deploying the registry to Testnet are tracked separately.
+### Testnet Deployment
+
+The registry is deployed and live on Stellar Testnet:
+
+- Contract address: `CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH`
+- `poseidon_preimage` is registered under circuit ID `1`, using the same
+  verifying key as `contracts/verifier`'s hardcoded constants (encoded
+  identically — verified byte-for-byte against
+  `contracts/registry/src/tests.rs`'s known-correct test constants
+  before registering).
+- Verified against real, previously-proven-valid proof bytes (the same
+  ones `sdk/test/fixtures.ts` uses): a correct proof returns `true`, and
+  a deliberately tampered proof (negated `proof_a` y-coordinate) returns
+  `false`. Both checked directly on-chain via `stellar contract invoke`,
+  not simulated.
+
+**What is not yet done**: the SDK and `demo/` still target the older,
+single-circuit `contracts/verifier` deployment — `sdk/src/verify.ts`'s
+`verifyOnChain` doesn't speak the registry's `verify_proof(id, ...)`
+signature (or the current `contracts/verifier`'s `verify_proof(caller,
+...)` signature, for that matter — see #184). Wiring the SDK and demo
+up to call the registry for any of the three additional circuits
+(`merkle_inclusion`, `range_proof`, `threshold_2of3`) is tracked in
+#183. Deploying the registry was a prerequisite for that work, not the
+completion of it.
 
 ## Design Choices
 
