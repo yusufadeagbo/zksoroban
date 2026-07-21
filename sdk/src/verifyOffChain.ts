@@ -1,7 +1,17 @@
 // sdk/src/verifyOffChain.ts
 import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode, VerificationKey } from "./types";
 
-const snarkjs: any = require("snarkjs");
+interface SnarkjsModule {
+  groth16: {
+    verify(
+      verificationKey: VerificationKey,
+      publicSignals: string[],
+      proof: SnarkjsProof
+    ): Promise<boolean>;
+  };
+}
+
+const snarkjs: SnarkjsModule = require("snarkjs");
 
 export async function verifyOffChain(
   proof: SnarkjsProof,
