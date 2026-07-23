@@ -27,8 +27,13 @@ pushing a tag matching `v*` (e.g. `v0.2.0`). To cut a release:
 3. The workflow then runs `npm ci`, `npm run lint`, `npm test`, and
    `npm run build` in `sdk/` — a failure at any of these steps stops the
    release before anything is published. If they pass, it runs
-   `npm publish --access public` and creates a GitHub release for the
-   tag with auto-generated notes.
+   `npm publish --access public --provenance` and creates a GitHub
+   release for the tag with auto-generated notes.
+
+`--provenance` attaches a signed, publicly verifiable attestation that
+the published package was built by this exact workflow run from this
+exact commit — visible on the npm package page. It relies on the
+`id-token: write` permission the workflow already requests.
 
 The workflow authenticates to npm via the `NPM_TOKEN` repository secret,
 which `actions/setup-node` maps into the `NODE_AUTH_TOKEN` environment
