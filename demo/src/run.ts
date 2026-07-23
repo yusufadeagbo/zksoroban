@@ -4,7 +4,14 @@ import readline from "node:readline";
 
 import { Keypair, Networks } from "@stellar/stellar-sdk";
 
-import { ProofBundle, formatProof, poseidon, verifyOnChain } from "@zksoroban/sdk";
+import {
+  ProofBundle,
+  SnarkjsProof,
+  ZkInputError,
+  formatProof,
+  poseidon,
+  verifyOnChain
+} from "@zksoroban/sdk";
 
 const snarkjs: any = require("snarkjs");
 
@@ -14,6 +21,12 @@ const NETWORKS: Record<string, string> = {
   mainnet: "https://mainnet.sorobanrpc.com"
 };
 const CONTRACT_PATTERN = /^C[A-Z2-7]{55}$/;
+
+// A syntactically valid field element that is nonetheless rejected: it's
+// exactly the BN254 scalar field modulus, so it's "out of range" the same
+// way sdk/src/validate.ts's own tests exercise this boundary.
+const OUT_OF_FIELD_PUBLIC_INPUT =
+  "21888242871839275222246405745257275088548364400416034343698204186575808495617";
 
 interface Answers {
   secret: bigint;
@@ -109,6 +122,37 @@ async function collectAnswers(rl: readline.Interface): Promise<Answers> {
   };
 }
 
+async function verifyAndReport(opts: {
+  proof: SnarkjsProof;
+  publicSignals: string[];
+  rpcUrl: string;
+  contractId: string;
+  keypair: Keypair;
+  log: (line: string, level?: Answers["verbosity"]) => void;
+}): Promise<void> {
+  const bundle: ProofBundle = {
+    proof: opts.proof,
+    publicSignals: opts.publicSignals,
+    circuit: "poseidon_preimage",
+    generatedAt: new Date().toISOString(),
+    networkPassphrase: Networks.TESTNET
+  };
+
+  opts.log("submitting to the verifier contract...", "verbose");
+
+  const result = await verifyOnChain({
+    rpcUrl: opts.rpcUrl,
+    contractId: opts.contractId,
+    keypair: opts.keypair,
+    bundle
+  });
+
+  opts.log(`txHash: ${result.txHash}`, "normal");
+  opts.log(`ledger: ${result.ledger}`, "verbose");
+  opts.log(`fee: ${result.fee}`, "verbose");
+  console.log(`✓ Proof verified on-chain: ${result.verified}`);
+}
+
 async function main(): Promise<void> {
   const secretKey = requireEnv("SOROBAN_SECRET_KEY");
 
@@ -150,31 +194,47 @@ async function main(): Promise<void> {
   };
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath);
-  const calldata = formatProof(proof, publicSignals);
+  const keypair = Keypair.fromSecret(secretKey);
 
-  log("submitting to the verifier contract...", "verbose");
-  const bundle: ProofBundle = {
+  console.log("\n=== Scenario 1: success — valid proof ===");
+  await verifyAndReport({
     proof,
     publicSignals,
-    circuit: "poseidon_preimage",
-    generatedAt: new Date().toISOString(),
-    networkPassphrase: Networks.TESTNET
-  };
-
-  console.log(`circuit: ${bundle.circuit}`);
-  console.log(`generatedAt: ${bundle.generatedAt}`);
-
-  const result = await verifyOnChain({
     rpcUrl: answers.rpcUrl,
     contractId: answers.contractId,
-    keypair: Keypair.fromSecret(secretKey),
-    bundle
+    keypair,
+    log
   });
 
-  log(`txHash: ${result.txHash}`, "normal");
-  log(`ledger: ${result.ledger}`, "verbose");
-  log(`fee: ${result.fee}`, "verbose");
-  console.log(`✓ Proof verified on-chain: ${result.verified}`);
+  console.log("\n=== Scenario 2: failure — valid proof, wrong public input ===");
+  log(
+    "using the same proof, but a different commitment than the one it actually proves",
+    "normal"
+  );
+  log("expected: verified = false (the pairing check rejects it, nothing throws)", "verbose");
+  const wrongCommitment = poseidon([answers.secret + 1n]);
+  await verifyAndReport({
+    proof,
+    publicSignals: [wrongCommitment.toString()],
+    rpcUrl: answers.rpcUrl,
+    contractId: answers.contractId,
+    keypair,
+    log
+  });
+
+  console.log("\n=== Scenario 3: failure — malformed public input ===");
+  log("a public input at or beyond the BN254 field modulus is rejected before any network call", "normal");
+  try {
+    formatProof(proof, [OUT_OF_FIELD_PUBLIC_INPUT]);
+    console.log("(unexpected: formatProof did not throw)");
+  } catch (error) {
+    if (!(error instanceof ZkInputError)) {
+      throw error;
+    }
+    console.log("✗ formatProof threw ZkInputError, as expected:");
+    console.log(`  code: ${error.code}`);
+    console.log(`  message: ${error.message}`);
+  }
 }
 
 void main().catch((error) => {
