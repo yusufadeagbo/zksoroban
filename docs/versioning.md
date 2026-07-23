@@ -12,6 +12,31 @@ The SDK and contracts follow [Semantic Versioning](https://semver.org):
 
 The current SDK version is tracked in `sdk/package.json`.
 
+## Releasing the SDK
+
+Publishing is automated via `.github/workflows/publish.yml`, triggered by
+pushing a tag matching `v*` (e.g. `v0.2.0`). To cut a release:
+
+1. Bump the version in `sdk/package.json` to match the tag you're about
+   to push, and merge that change to `main` first.
+2. Tag the resulting commit and push the tag:
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+3. The workflow then runs `npm ci`, `npm run lint`, `npm test`, and
+   `npm run build` in `sdk/` — a failure at any of these steps stops the
+   release before anything is published. If they pass, it runs
+   `npm publish --access public` and creates a GitHub release for the
+   tag with auto-generated notes.
+
+The workflow authenticates to npm via the `NPM_TOKEN` repository secret,
+which `actions/setup-node` maps into the `NODE_AUTH_TOKEN` environment
+variable `npm publish` expects. Only `sdk/` is published — `demo/` and
+the Rust contracts are not npm packages. `sdk/package.json`'s `files`
+field is scoped to `["dist"]`, so only the compiled output is published,
+never the TypeScript source.
+
 ## Wave Program Milestones
 
 Sprint work is organized into time-boxed milestones called Waves. Each Wave is a GitHub milestone with a due date. Issues that belong to the active sprint are tagged with the `wave-sprint` label.
