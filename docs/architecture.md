@@ -126,7 +126,11 @@ There is no allowlist/permission-tiering above this: any address that
 can produce a valid Soroban auth entry for itself can call
 `verify_proof`, subject only to the rate limit. See
 [`docs/security.md`](security.md) for the full threat checklist this
-auth model was evaluated against.
+auth model was evaluated against, and
+[`docs/security-model.md`](security-model.md) for the full-stack
+security model (guarantees, trust assumptions, and threat model)
+that application developers building on `zksoroban` should read before
+relying on any of this.
 
 ## Demo Layer
 

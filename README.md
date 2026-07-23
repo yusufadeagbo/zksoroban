@@ -112,4 +112,9 @@ Known gaps, tracked as open issues rather than left implicit:
 - `contracts/verifier` still hardcodes one circuit's verifying key; `contracts/registry` supports multiple, and is deployed, but only `poseidon_preimage` is registered under it so far.
 - This contract provides no replay protection — see [docs/security.md](docs/security.md) for what it does and does not guarantee.
 
+Building an application on top of `zksoroban`? Read
+[docs/security-model.md](docs/security-model.md) first — it covers the
+full stack's guarantees, trust assumptions, and threat model, including
+what this stack explicitly does **not** protect against.
+
 See [docs/zk-primer.md](https://github.com/yusufadeagbo/zksoroban/blob/main/docs/zk-primer.md) and [docs/proof-format.md](https://github.com/yusufadeagbo/zksoroban/blob/main/docs/proof-format.md) for the detailed background and byte-level interoperability spec.
