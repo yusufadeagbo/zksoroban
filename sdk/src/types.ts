@@ -35,7 +35,7 @@ export interface ProofBundle {
 }
 
 export interface VerifyOptions {
-  rpcUrl: string;
+  rpcUrl: string | string[];
   contractId: string;
   keypair: Keypair;
   calldata?: SorobanProofCalldata;
@@ -56,7 +56,8 @@ export enum SorobanZkErrorCode {
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
   RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
-  NETWORK_MISMATCH = "NETWORK_MISMATCH"
+  NETWORK_MISMATCH = "NETWORK_MISMATCH",
+  ALL_ENDPOINTS_UNAVAILABLE = "ALL_ENDPOINTS_UNAVAILABLE"
 }
 
 export class SorobanZkError extends Error {
@@ -85,6 +86,18 @@ export class NetworkMismatchError extends SorobanZkError {
       SorobanZkErrorCode.NETWORK_MISMATCH
     );
     this.name = "NetworkMismatchError";
+  }
+}
+
+export class AllEndpointsUnavailableError extends SorobanZkError {
+  constructor(public attempted: { url: string; error: string }[]) {
+    super(
+      `All ${attempted.length} RPC endpoint(s) failed: ${attempted
+        .map((a) => `${a.url} (${a.error})`)
+        .join("; ")}`,
+      SorobanZkErrorCode.ALL_ENDPOINTS_UNAVAILABLE
+    );
+    this.name = "AllEndpointsUnavailableError";
   }
 }
 
