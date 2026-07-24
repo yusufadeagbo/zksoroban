@@ -9,6 +9,7 @@ import {
 
 import { formatProof } from "./proof";
 import {
+  AllEndpointsUnavailableError,
   NetworkMismatchError,
   ProofBundle,
   SorobanProofCalldata,
@@ -21,6 +22,36 @@ import { validateCalldata } from "./validate";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;
+
+function debugLog(message: string): void {
+  if (process.env.SOROBAN_ZK_DEBUG) {
+    console.error(`[soroban-zk] ${message}`);
+  }
+}
+
+export async function connectWithFallback(
+  rpcUrl: string | string[]
+): Promise<{ server: rpc.Server; network: rpc.Api.GetNetworkResponse }> {
+  const urls = Array.isArray(rpcUrl) ? rpcUrl : [rpcUrl];
+  const attempted: { url: string; error: string }[] = [];
+
+  for (const url of urls) {
+    try {
+      const server = new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+      const network = await server.getNetwork();
+      if (attempted.length > 0) {
+        debugLog(`connected to ${url} after ${attempted.length} failed endpoint(s)`);
+      }
+      return { server, network };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog(`endpoint ${url} unavailable: ${message}`);
+      attempted.push({ url, error: message });
+    }
+  }
+
+  throw new AllEndpointsUnavailableError(attempted);
+}
 
 function makeBytesScVal(bytes: Buffer): xdr.ScVal {
   return xdr.ScVal.scvBytes(bytes);
@@ -99,8 +130,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
   validateCalldata(calldata);
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
-    const network = await server.getNetwork();
+    const { server, network } = await connectWithFallback(opts.rpcUrl);
 
     if (opts.bundle) {
       assertBundleNetwork(opts.bundle, network.passphrase);
