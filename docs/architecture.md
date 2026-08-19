@@ -226,15 +226,17 @@ The registry is deployed and live on Stellar Testnet:
   `false`. Both checked directly on-chain via `stellar contract invoke`,
   not simulated.
 
-**What is not yet done**: the SDK and `demo/` still target the older,
-single-circuit `contracts/verifier` deployment — `sdk/src/verify.ts`'s
-`verifyOnChain` doesn't speak the registry's `verify_proof(id, ...)`
-signature (or the current `contracts/verifier`'s `verify_proof(caller,
-...)` signature, for that matter — see #184). Wiring the SDK and demo
-up to call the registry for any of the three additional circuits
-(`merkle_inclusion`, `range_proof`, `threshold_2of3`) is tracked in
-#183. Deploying the registry was a prerequisite for that work, not the
-completion of it.
+**What is not yet done**: `merkle_inclusion`, `range_proof`, and
+`threshold_2of3` are registered with the registry and verified end to
+end in a local test environment (`contracts/registry/src/tests.rs`),
+but not yet registered on the *live* Testnet deployment — that
+`register_circuit` call needs the registry's admin key, which is a
+maintainer action, not something a contributor's PR can do on its own.
+See docs/multi-circuit.md for the full pattern. `demo/` itself now
+targets the live registry (circuit ID `1`, `poseidon_preimage`) via
+`sdk/src/verify.ts`'s `verifyViaRegistry`, and `contracts/verifier`'s
+own `verify_proof(caller, ...)` signature is what `verifyOnChain`
+speaks.
 
 ## Design Choices
 
