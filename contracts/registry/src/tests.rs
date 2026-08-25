@@ -1,8 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, Vec};
 
 const POSEIDON_CIRCUIT_ID: u32 = 1;
 const RANGE_PROOF_CIRCUIT_ID: u32 = 2;
@@ -698,4 +698,114 @@ fn verify_proof_returns_false_for_wrong_public_input_count() {
     );
 
     assert!(!result);
+}
+
+// verification_result event coverage: one test per outcome path, asserting
+// the event's success/inputs_hash fields against what verify_proof was
+// actually called with.
+
+fn expected_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    for input in public_inputs.iter() {
+        bytes.append(&Bytes::from(&input));
+    }
+    env.crypto().sha256(&bytes).to_bytes()
+}
+
+fn assert_single_verification_event(
+    env: &Env,
+    contract_id: &Address,
+    success: bool,
+    public_inputs: &Vec<BytesN<32>>,
+) {
+    let expected = VerificationResult {
+        success,
+        inputs_hash: expected_inputs_hash(env, public_inputs),
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            env,
+            (contract_id.clone(), expected.topics(env), expected.data(env)),
+        ]
+    );
+}
+
+#[test]
+fn verify_proof_emits_event_on_pairing_success() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+    let public_inputs = valid_public_inputs(&env);
+
+    let result = client.verify_proof(
+        &POSEIDON_CIRCUIT_ID,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs,
+    );
+    assert!(result);
+
+    assert_single_verification_event(&env, &client.address, true, &public_inputs);
+}
+
+#[test]
+fn verify_proof_emits_event_on_pairing_failure() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+    let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
+    let public_inputs = valid_public_inputs(&env);
+
+    let result = client.verify_proof(
+        &POSEIDON_CIRCUIT_ID,
+        &Bytes::from_array(&env, &tampered),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs,
+    );
+    assert!(!result);
+
+    assert_single_verification_event(&env, &client.address, false, &public_inputs);
+}
+
+#[test]
+fn verify_proof_emits_event_on_wrong_public_input_count() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+
+    let too_many = vec![
+        &env,
+        BytesN::from_array(&env, &VALID_PUBLIC_INPUT),
+        BytesN::from_array(&env, &VALID_PUBLIC_INPUT),
+    ];
+    let result = client.verify_proof(
+        &POSEIDON_CIRCUIT_ID,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &too_many,
+    );
+    assert!(!result);
+
+    assert_single_verification_event(&env, &client.address, false, &too_many);
+}
+
+#[test]
+fn verify_proof_emits_event_on_unknown_circuit() {
+    let (env, _admin, client) = setup();
+    let public_inputs = valid_public_inputs(&env);
+
+    let result = client.verify_proof(
+        &UNKNOWN_CIRCUIT_ID,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs,
+    );
+    assert!(!result);
+
+    assert_single_verification_event(&env, &client.address, false, &public_inputs);
 }

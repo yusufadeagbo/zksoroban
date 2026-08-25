@@ -32,8 +32,8 @@ What `zksoroban` actually provides, end to end:
   hit, or a verification, to an address that never authorized that
   specific invocation.
 - **Expiry enforcement.** A proof whose `expiry_ledger` public input has
-  already passed is rejected with `Error::ProofExpired`, not silently
-  accepted, once past its intended validity window.
+  already passed is rejected (`verify_proof` returns `Ok(false)`), not
+  silently accepted, once past its intended validity window.
 - **SDK-side input validation.** `sdk/src/validate.ts` rejects malformed
   proof coordinates, out-of-field-range values, and malformed public
   inputs *before* they reach the network — see `validateProofInput` and

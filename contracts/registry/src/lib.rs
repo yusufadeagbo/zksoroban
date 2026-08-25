@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype,
+    contract, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, TryFromVal, Vec,
 };
@@ -23,6 +23,15 @@ pub struct VerifyingKey {
 enum DataKey {
     Admin,
     Circuit(u32),
+}
+
+/// Emitted on every `verify_proof` call, regardless of outcome.
+#[contractevent(topics = ["zk", "verify"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerificationResult {
+    pub success: bool,
+    /// sha256 of the concatenated public inputs, in call order.
+    pub inputs_hash: BytesN<32>,
 }
 
 #[contract]
@@ -64,36 +73,64 @@ impl RegistryContract {
         proof_c: Bytes,
         public_inputs: Vec<BytesN<32>>,
     ) -> bool {
-        let vk: VerifyingKey = match env.storage().persistent().get(&DataKey::Circuit(id)) {
-            Some(vk) => vk,
-            None => return false,
-        };
+        let inputs_hash = compute_inputs_hash(&env, &public_inputs);
+        let success = run_verification(&env, id, &proof_a, &proof_b, &proof_c, &public_inputs);
 
-        if public_inputs.len() + 1 != vk.ic.len() {
-            return false;
+        VerificationResult {
+            success,
+            inputs_hash,
         }
+        .publish(&env);
 
-        let proof_a = read_g1(&env, &proof_a, "proof_a");
-        let proof_b = read_g2(&env, &proof_b, "proof_b");
-        let proof_c = read_g1(&env, &proof_c, "proof_c");
-
-        let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
-        let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
-        let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
-        let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
-
-        let mut vk_x = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
-        for i in 0..public_inputs.len() {
-            let input = Bn254Fr::from_bytes(public_inputs.get(i).unwrap());
-            let ic = Bn254G1Affine::from_bytes(vk.ic.get(i + 1).unwrap());
-            vk_x = vk_x + (ic * input);
-        }
-
-        env.crypto().bn254().pairing_check(
-            vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
-            vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
-        )
+        success
     }
+}
+
+fn run_verification(
+    env: &Env,
+    id: u32,
+    proof_a: &Bytes,
+    proof_b: &Bytes,
+    proof_c: &Bytes,
+    public_inputs: &Vec<BytesN<32>>,
+) -> bool {
+    let vk: VerifyingKey = match env.storage().persistent().get(&DataKey::Circuit(id)) {
+        Some(vk) => vk,
+        None => return false,
+    };
+
+    if public_inputs.len() + 1 != vk.ic.len() {
+        return false;
+    }
+
+    let proof_a = read_g1(env, proof_a, "proof_a");
+    let proof_b = read_g2(env, proof_b, "proof_b");
+    let proof_c = read_g1(env, proof_c, "proof_c");
+
+    let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
+    let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
+    let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
+    let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
+
+    let mut vk_x = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
+    for i in 0..public_inputs.len() {
+        let input = Bn254Fr::from_bytes(public_inputs.get(i).unwrap());
+        let ic = Bn254G1Affine::from_bytes(vk.ic.get(i + 1).unwrap());
+        vk_x = vk_x + (ic * input);
+    }
+
+    env.crypto().bn254().pairing_check(
+        vec![env, proof_a, -vk_alpha, -vk_x, -proof_c],
+        vec![env, proof_b, vk_beta, vk_gamma, vk_delta],
+    )
+}
+
+fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    for input in public_inputs.iter() {
+        bytes.append(&Bytes::from(&input));
+    }
+    env.crypto().sha256(&bytes).to_bytes()
 }
 
 fn read_g1(env: &Env, bytes: &Bytes, label: &str) -> Bn254G1Affine {

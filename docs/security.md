@@ -54,8 +54,8 @@ What `contracts/verifier` actually provides:
   requires real Soroban auth from the relevant address — not spoofable
   by supplying a different address in the call arguments.
 - **Expiry enforcement**: a proof whose `expiry_ledger` public input has
-  already passed is rejected with `Error::ProofExpired`, not silently
-  accepted.
+  already passed is rejected (`verify_proof` returns `Ok(false)`), not
+  silently accepted.
 
 What it explicitly does **not** provide:
 
