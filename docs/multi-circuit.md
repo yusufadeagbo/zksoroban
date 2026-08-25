@@ -67,18 +67,35 @@ The commands above prove the encoding is correct end-to-end. They do
 (`CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH` on Testnet,
 per [`docs/architecture.md`](architecture.md#testnet-deployment)) — that
 call requires `admin.require_auth()`, i.e. the registry's actual admin
-signing key, which only the maintainer holds. Once a PR's encoding is
-reviewed and merged, the maintainer runs:
+signing key, which only the maintainer holds.
+
+Deriving that command's `--vk` argument by hand from a `verification_key.json`
+(the byte encoding `contracts/registry/src/tests.rs`'s constants use) is
+error-prone to do manually, so the SDK's `format-vk` CLI command does it:
+
+```bash
+node sdk/dist/cjs/cli.js format-vk \
+  --vk circuits/range_proof/setup/verification_key.json \
+  --id 2
+```
+
+This runs the exact same `formatVerifyingKey` encoding
+`sdk/test/formatVerifyingKey.test.ts` checks byte-for-byte against
+`contracts/registry/src/tests.rs`'s constants, and prints a ready-to-run
+command:
 
 ```bash
 stellar contract invoke \
   --id CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH \
   --network testnet \
   --source-account <registry-admin> \
-  -- register_circuit --id 2 --vk '<verifying key JSON>'
+  -- register_circuit --id 2 --vk '{"alpha":"...","beta":"...","gamma":"...","delta":"...","ic":["...","...","...","..."]}'
 ```
 
-using the same VK byte encoding the tests already verified.
+Once a PR's encoding is reviewed and merged, the maintainer runs this for
+each of `range_proof` (id 2), `threshold_2of3` (id 3), and
+`merkle_inclusion` (id 4), swapping in the registry admin's own
+`--source-account`.
 
 ## SDK: `verifyViaRegistry`
 
@@ -122,7 +139,9 @@ purely additive, so existing single-circuit call sites keep working.
 4. Pick the next unused circuit ID and add a row to the table above.
 5. In `contracts/registry/src/tests.rs`, add that circuit's VK/proof/public
    input constants (encoded via the same `formatProof`-equivalent byte
-   layout) and a `round_trip_register_and_verify_<name>` /
+   layout — `node sdk/dist/cjs/cli.js format-vk --vk <path> --id <n>`
+   prints the VK's byte encoding as hex if you want to cross-check the
+   constants you add) and a `round_trip_register_and_verify_<name>` /
    `round_trip_rejects_tampered_<name>` test pair, mirroring the existing
    `range_proof`/`threshold_2of3` tests.
 6. Once merged, the maintainer registers the real VK against the live

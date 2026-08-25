@@ -26,7 +26,7 @@ The contract expects:
   - `public_inputs[0]`: the circuit commitment
   - `public_inputs[1]`: `expiry_ledger` (see below)
 
-If any proof byte length is wrong, the contract panics during parsing. If the number of public inputs is wrong, or the proof has expired, the contract returns `Ok(false)` — see [`docs/architecture.md`](architecture.md#events) for why expiry rejection returns `Ok(false)` rather than a distinct `Err` variant.
+If any proof byte length is wrong, the contract panics during parsing. If the number of public inputs is wrong, the contract returns `Ok(false)`. If the proof has expired, the contract returns `Err(ProofExpired)`.
 
 ## Field and Curve Context
 
@@ -168,7 +168,7 @@ public_inputs[1] = expiry_ledger
 env.ledger().sequence() <= expiry_ledger
 ```
 
-If the current ledger sequence is **greater than** `expiry_ledger`, the contract returns `Ok(false)`. A proof whose `expiry_ledger` equals the current sequence is still valid (the boundary is inclusive). The high 28 bytes must be zero; otherwise the contract treats the encoding as invalid and also returns `Ok(false)`.
+If the current ledger sequence is **greater than** `expiry_ledger`, the contract returns `Err(ProofExpired)`. A proof whose `expiry_ledger` equals the current sequence is still valid (the boundary is inclusive). The high 28 bytes must be zero; otherwise the contract treats the encoding as invalid and returns `Ok(false)`.
 
 The SDK appends this field when `formatProof` is given an `expiryLedger` argument:
 

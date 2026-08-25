@@ -1,8 +1,13 @@
 import fs from "node:fs";
 
-import { formatProof } from "./proof.js";
+import { formatProof, formatVerifyingKey } from "./proof.js";
 import { poseidon } from "./poseidon.js";
-import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode } from "./types.js";
+import { SnarkjsProof, SorobanZkError, SorobanZkErrorCode, VerificationKey } from "./types.js";
+
+// The live Testnet deployment documented in docs/architecture.md and
+// docs/multi-circuit.md — used as format-vk's default so the generated
+// command is ready to run as-is for the common case.
+const REGISTRY_CONTRACT_ID = "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH";
 
 interface InspectableBundle {
   proof: SnarkjsProof;
@@ -19,7 +24,8 @@ const USAGE = [
   "  prove         --secret <decimal>            compute the Poseidon commitment and circuit input",
   "  verify        --proof <file> --public <file>  encode to Soroban calldata and report the byte layout",
   "  inspect       --bundle <file>               print ProofBundle metadata and calldata sizes",
-  "  estimate-fee  --proof <file> --public <file>  print a deterministic fee estimate"
+  "  estimate-fee  --proof <file> --public <file>  print a deterministic fee estimate",
+  "  format-vk     --vk <file> --id <u32> [--registry-id <id>]  encode a verification_key.json for register_circuit"
 ].join("\n");
 
 function getFlag(args: string[], name: string): string | undefined {
@@ -113,6 +119,38 @@ function commandEstimateFee(args: string[]): string[] {
   ];
 }
 
+function commandFormatVk(args: string[]): string[] {
+  const id = requireFlag(args, "--id");
+  const vk = readJson<VerificationKey>(requireFlag(args, "--vk"));
+  const registryId = getFlag(args, "--registry-id") ?? REGISTRY_CONTRACT_ID;
+
+  const { alpha, beta, gamma, delta, ic } = formatVerifyingKey(vk);
+  const vkJson = JSON.stringify({
+    alpha: alpha.toString("hex"),
+    beta: beta.toString("hex"),
+    gamma: gamma.toString("hex"),
+    delta: delta.toString("hex"),
+    ic: ic.map((point) => point.toString("hex"))
+  });
+
+  return [
+    "command: format-vk",
+    `circuit id: ${id}`,
+    `registry: ${registryId}`,
+    `alpha bytes: ${alpha.length}`,
+    `beta bytes: ${beta.length}`,
+    `gamma bytes: ${gamma.length}`,
+    `delta bytes: ${delta.length}`,
+    `ic points: ${ic.length}`,
+    "",
+    "stellar contract invoke \\",
+    `  --id ${registryId} \\`,
+    "  --network testnet \\",
+    "  --source-account <registry-admin> \\",
+    `  -- register_circuit --id ${id} --vk '${vkJson}'`
+  ];
+}
+
 export function runCli(argv: string[]): string {
   const [command, ...args] = argv;
 
@@ -125,6 +163,8 @@ export function runCli(argv: string[]): string {
       return commandInspect(args).join("\n");
     case "estimate-fee":
       return commandEstimateFee(args).join("\n");
+    case "format-vk":
+      return commandFormatVk(args).join("\n");
     default:
       return USAGE;
   }

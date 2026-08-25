@@ -164,8 +164,8 @@ from scratch.
 ## Events
 
 Both `contracts/verifier::verify_proof` and `contracts/registry::verify_proof`
-publish a `verification_result` event on every call, regardless of outcome —
-see [zksoroban#10](https://github.com/yusufadeagbo/zksoroban/issues/10).
+publish a `verification_result` event on the outcome paths that return via
+`Ok(...)` — see [zksoroban#10](https://github.com/yusufadeagbo/zksoroban/issues/10).
 
 Topics: `["zk", "verify"]` (fixed, via `#[contractevent(topics = ["zk", "verify"])]`).
 
@@ -188,37 +188,32 @@ and monitoring — it is never re-consumed by a circuit or checked
 in-contract — Poseidon's SNARK-friendliness has no benefit here, so sha256
 was used instead.
 
-### Why `verify_proof`'s rejection paths no longer return `Err(...)`
+### Why the allowlist/rate-limit/expiry rejections in `contracts/verifier` don't emit an event
 
 Soroban rolls back **all** events published during a contract call whose
 top-level return is `Err(code)` from a `#[contracterror]`-typed `Result`
 (confirmed empirically against this repo's `soroban-sdk` version — the
 WASM ABI encodes a contract-level `Err` return as a failed invocation, and
 the host rolls back both storage and events to the state the call started
-with). This meant the event above could never survive on exactly the
-outcome paths issue #10 cared about most.
+with). `verify_proof` still returns `Err(Error::CallerNotAllowed)`,
+`Err(Error::RateLimitExceeded)`, and `Err(Error::ProofExpired)` for those
+three rejections, exactly as before this event was added — so publishing on
+those paths would be dead code; the event would never actually reach an
+indexer.
 
-To guarantee the event is emitted on every outcome, `contracts/verifier::verify_proof`
-was changed to return `Ok(false)` instead of `Err(Error::CallerNotAllowed)`,
-`Err(Error::RateLimitExceeded)`, and `Err(Error::ProofExpired)` — those three
-`Error` variants have been removed from the contract. Callers that need to
-know *why* a call failed must now read the event (or, for allowlist/rate-limit
-state, query `is_allowlisted`/`limits` directly) rather than branch on a
-distinct error code. `Error::NotInitialized` and `Error::InvalidVerifyingKey`
-are unaffected by this — those represent a misconfigured contract, not a
-verification outcome, and are out of scope for this event.
+Those three cases don't need the event to be observable, though: a failed
+`verify_proof` transaction already carries its specific `Error` variant
+(decoded by the SDK's typed-error mapping — see #184), which is at least as
+informative as this event's bare `success: bool` would have been. The event
+only adds real value on the paths that were genuinely silent before it
+existed and still return `Ok(...)`: wrong public input count, a malformed
+`expiry_ledger` encoding, and the pairing-check result itself. Those are
+the only three paths `contracts/verifier::verify_proof` publishes on.
 
-One second-order effect: previously, an expired proof's rate-limit counter
-increment was rolled back along with everything else in the call (since the
-call returned `Err`), so an expired submission didn't count against the
-caller's rate limit. Since that path now returns `Ok(false)`, the counter
-increment persists — expired-proof calls now count against the rate limit
-like every other outcome. This is arguably more consistent than before, but
-is a real behavior change worth knowing about.
-
-`contracts/registry::verify_proof` was never affected by this — it already
-returned a bare `bool`, never `Result`, so its event was never at risk of
-being rolled back.
+`contracts/registry::verify_proof` was never affected by this — it always
+returned a bare `bool`, never `Result`, so every one of its outcomes
+(unknown circuit ID, wrong input count, pairing result) publishes the
+event.
 
 ## Demo Layer
 
@@ -285,15 +280,69 @@ The registry is deployed and live on Stellar Testnet:
   `false`. Both checked directly on-chain via `stellar contract invoke`,
   not simulated.
 
-**What is not yet done**: the SDK and `demo/` still target the older,
-single-circuit `contracts/verifier` deployment — `sdk/src/verify.ts`'s
-`verifyOnChain` doesn't speak the registry's `verify_proof(id, ...)`
-signature (or the current `contracts/verifier`'s `verify_proof(caller,
-...)` signature, for that matter — see #184). Wiring the SDK and demo
-up to call the registry for any of the three additional circuits
-(`merkle_inclusion`, `range_proof`, `threshold_2of3`) is tracked in
-#183. Deploying the registry was a prerequisite for that work, not the
-completion of it.
+**What is not yet done**: `merkle_inclusion`, `range_proof`, and
+`threshold_2of3` are registered with the registry and verified end to
+end in a local test environment (`contracts/registry/src/tests.rs`),
+but not yet registered on the *live* Testnet deployment — that
+`register_circuit` call needs the registry's admin key, which is a
+maintainer action, not something a contributor's PR can do on its own.
+See docs/multi-circuit.md for the full pattern. `demo/` itself now
+targets the live registry (circuit ID `1`, `poseidon_preimage`) via
+`sdk/src/verify.ts`'s `verifyViaRegistry`, and `contracts/verifier`'s
+own `verify_proof(caller, ...)` signature is what `verifyOnChain`
+speaks.
+
+## Admin Ownership & Contract Upgrades
+
+Both `contracts/verifier` and `contracts/registry` share the same
+two-step admin transfer and self-upgrade mechanism — see
+[zksoroban#12](https://github.com/yusufadeagbo/zksoroban/issues/12).
+
+### Two-step admin transfer
+
+Rotating the admin address is a two-call handshake, not a single
+"set new admin" call, so a mistyped or unreachable address can never
+strand the contract without a working admin:
+
+1. `propose_admin(new_admin)` — requires the **current** admin's auth.
+   Stores `new_admin` as pending; the current admin is unchanged until
+   step 2 completes.
+2. `accept_admin()` — requires the **pending** admin's own auth, not the
+   current admin's. Promotes the pending admin to admin and clears the
+   pending slot.
+
+`pending_admin()` is a read-only getter for whatever is currently
+proposed (`None` if nothing is pending). Calling `accept_admin` with
+nothing pending fails — `Err(Error::NoPendingAdmin)` on
+`contracts/verifier`, a panic on `contracts/registry` (matching that
+contract's existing panic-based error handling; it has no
+`#[contracterror]` type today).
+
+`propose_admin` and `accept_admin` never touch the contract's wasm or any
+other state — they only ever change who the admin address is.
+
+### Upgrade
+
+`upgrade(new_wasm_hash)` — requires the current admin's auth — calls
+`env.deployer().update_current_contract_wasm(new_wasm_hash)`, replacing
+the contract's executable in place. The contract's address and storage
+are untouched; only the code behind them changes. The new wasm must
+already be uploaded to the network
+(`env.deployer().upload_contract_wasm`) before calling `upgrade` — the
+host rejects a hash that isn't already-uploaded code. The swap doesn't
+take effect until the current invocation finishes, so a contract can't
+upgrade itself mid-call and then keep running as the new code.
+
+### Out of scope (per #12)
+
+No timelock on either the handoff or the upgrade, no governance/voting,
+and no proxy pattern — both contracts upgrade their own executable in
+place rather than sitting behind a separate, swappable proxy address. A
+compromised admin key can immediately upgrade either contract to
+arbitrary code, and can propose an ownership handoff (though not force
+one through — `accept_admin` still needs the *recipient's* own auth).
+See [`docs/security-model.md`](security-model.md)'s Trust Assumptions for
+what a compromised admin key can do.
 
 ## Design Choices
 

@@ -2,8 +2,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::storage::Temporary as _;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, String, Vec};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, String, Vec};
 
 const VK_ALPHA_G1: [u8; 64] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -167,7 +167,7 @@ fn verify_proof_rejects_expired_proof() {
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let caller = Address::generate(&env);
 
-    let result = client.verify_proof(
+    let result = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
@@ -175,7 +175,7 @@ fn verify_proof_rejects_expired_proof() {
         &public_inputs_with_expiry(&env, 50),
     );
 
-    assert!(!result);
+    assert_eq!(result, Err(Ok(Error::ProofExpired)));
 }
 
 #[test]
@@ -244,14 +244,14 @@ fn first_call_succeeds() {
 }
 
 #[test]
-fn limit_hit_returns_false() {
+fn limit_hit_returns_error() {
     let (env, _admin, client) = setup(2, 100);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
     assert!(call_valid(&env, &client, &caller));
 
-    let third = client.verify_proof(
+    let third = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
@@ -259,7 +259,7 @@ fn limit_hit_returns_false() {
         &public_inputs_with_expiry(&env, u32::MAX),
     );
 
-    assert!(!third);
+    assert_eq!(third, Err(Ok(Error::RateLimitExceeded)));
 }
 
 #[test]
@@ -269,14 +269,14 @@ fn window_expiry_resets_counter() {
 
     assert!(call_valid(&env, &client, &caller));
 
-    let exceeded = client.verify_proof(
+    let exceeded = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
         &public_inputs_with_expiry(&env, u32::MAX),
     );
-    assert!(!exceeded);
+    assert_eq!(exceeded, Err(Ok(Error::RateLimitExceeded)));
 
     env.ledger().with_mut(|li| {
         li.sequence_number += 11;
@@ -428,7 +428,7 @@ fn enabled_mode_blocks_unlisted_caller() {
     assert!(client.allowlist_enabled());
     assert!(!client.is_allowlisted(&caller));
 
-    let result = client.verify_proof(
+    let result = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
@@ -436,7 +436,7 @@ fn enabled_mode_blocks_unlisted_caller() {
         &public_inputs_with_expiry(&env, u32::MAX),
     );
 
-    assert!(!result);
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
 }
 
 #[test]
@@ -454,7 +454,7 @@ fn listed_caller_succeeds_when_allowlist_enabled() {
     client.remove_from_allowlist(&caller);
     assert!(!client.is_allowlisted(&caller));
 
-    let result = client.verify_proof(
+    let result = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
@@ -462,7 +462,7 @@ fn listed_caller_succeeds_when_allowlist_enabled() {
         &public_inputs_with_expiry(&env, u32::MAX),
     );
 
-    assert!(!result);
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
 }
 
 #[test]
@@ -551,9 +551,16 @@ fn update_vk_rejects_call_with_no_authorization() {
     client.update_vk(&poseidon_vk(&env));
 }
 
-// verification_result event coverage: one test per outcome path, asserting
-// the event's success/caller/inputs_hash fields against what verify_proof
-// was actually called with.
+// verification_result event coverage: one test per outcome path that
+// actually returns via Ok(...) — wrong input count, malformed expiry
+// encoding (folded into the tampered/wrong-input tests below since there's
+// no dedicated helper to construct that byte pattern), and the pairing
+// check result itself. The allowlist/rate-limit/expiry rejections return
+// Err(...) and are deliberately NOT covered here: Soroban rolls back any
+// event published during a call that returns Err from a #[contracterror]
+// Result, so publishing on those paths would be dead code. See
+// verify_proof_emits_no_event_on_err_rejection below for the negative case,
+// and docs/architecture.md for the full writeup.
 
 fn expected_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
     let mut bytes = Bytes::new(env);
@@ -642,62 +649,119 @@ fn verify_proof_emits_event_on_wrong_public_input_count() {
 }
 
 #[test]
-fn verify_proof_emits_event_on_expiry_rejection() {
+fn verify_proof_emits_no_event_on_err_rejection() {
     let (env, _admin, client) = setup(10, 100);
     env.ledger().with_mut(|li| li.sequence_number = 100);
     let caller = Address::generate(&env);
-    let public_inputs = public_inputs_with_expiry(&env, 50);
-
-    let result = client.verify_proof(
-        &caller,
-        &Bytes::from_array(&env, &VALID_PROOF_A),
-        &Bytes::from_array(&env, &VALID_PROOF_B),
-        &Bytes::from_array(&env, &VALID_PROOF_C),
-        &public_inputs,
-    );
-    assert!(!result);
-
-    assert_single_verification_event(&env, &client.address, &caller, false, &public_inputs);
-}
-
-#[test]
-fn verify_proof_emits_event_on_rate_limit_rejection() {
-    let (env, _admin, client) = setup(1, 100);
-    let caller = Address::generate(&env);
-    let public_inputs = public_inputs_with_expiry(&env, u32::MAX);
-
-    assert!(call_valid(&env, &client, &caller));
-
-    let result = client.verify_proof(
-        &caller,
-        &Bytes::from_array(&env, &VALID_PROOF_A),
-        &Bytes::from_array(&env, &VALID_PROOF_B),
-        &Bytes::from_array(&env, &VALID_PROOF_C),
-        &public_inputs,
-    );
-    assert!(!result);
-
-    assert_single_verification_event(&env, &client.address, &caller, false, &public_inputs);
-}
-
-#[test]
-fn verify_proof_emits_event_on_allowlist_rejection() {
-    let (env, _admin, client) = setup(10, 100);
-    env.ledger().with_mut(|li| li.sequence_number = 100);
-    let caller = Address::generate(&env);
-    let public_inputs = public_inputs_with_expiry(&env, u32::MAX);
 
     client.set_allowlist_mode(&true);
 
-    let result = client.verify_proof(
+    let result = client.try_verify_proof(
         &caller,
         &Bytes::from_array(&env, &VALID_PROOF_A),
         &Bytes::from_array(&env, &VALID_PROOF_B),
         &Bytes::from_array(&env, &VALID_PROOF_C),
-        &public_inputs,
+        &public_inputs_with_expiry(&env, u32::MAX),
     );
-    assert!(!result);
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
 
-    assert_single_verification_event(&env, &client.address, &caller, false, &public_inputs);
+    assert!(env.events().all().events().is_empty());
 }
 
+// Two-step admin transfer and upgrade (#12).
+
+#[test]
+fn admin_ownership_handoff_succeeds() {
+    let (env, _admin, client) = setup(10, 100);
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+    client.accept_admin();
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.get_config().admin, new_admin);
+}
+
+#[test]
+fn propose_admin_rejects_non_admin_caller() {
+    let (env, _admin, client) = setup(10, 100);
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "propose_admin",
+                args: (&new_admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_propose_admin(&new_admin);
+
+    assert!(result.is_err());
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn accept_admin_rejects_non_pending_admin_caller() {
+    let (env, _admin, client) = setup(10, 100);
+    let new_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_accept_admin();
+
+    assert!(result.is_err());
+    assert_eq!(client.pending_admin(), Some(new_admin));
+}
+
+#[test]
+fn accept_admin_fails_without_pending_admin() {
+    let (_env, _admin, client) = setup(10, 100);
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Err(Ok(Error::NoPendingAdmin)));
+}
+
+#[test]
+fn upgrade_succeeds_for_admin() {
+    let (env, _admin, client) = setup(10, 100);
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+fn upgrade_rejects_non_admin_caller() {
+    let (env, _admin, client) = setup(10, 100);
+    let attacker = Address::generate(&env);
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "upgrade",
+                args: (&wasm_hash,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_upgrade(&wasm_hash);
+
+    assert!(result.is_err());
+}

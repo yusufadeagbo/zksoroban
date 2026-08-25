@@ -2,20 +2,21 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
 
-import { Keypair, Networks } from "@stellar/stellar-sdk";
-
 import {
-  ProofBundle,
   SnarkjsProof,
   ZkInputError,
   formatProof,
   poseidon,
-  verifyOnChain
+  verifyViaRegistry
 } from "@zksoroban/sdk";
 
 const snarkjs: any = require("snarkjs");
 
-const TESTNET_CONTRACT_ID = "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN";
+// contracts/registry, not the old single-circuit contracts/verifier — see
+// docs/architecture.md#verifying-key-registry. poseidon_preimage is
+// registered under circuit ID 1 there.
+const TESTNET_REGISTRY_CONTRACT_ID = "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH";
+const POSEIDON_PREIMAGE_CIRCUIT_ID = 1;
 const NETWORKS: Record<string, string> = {
   testnet: "https://soroban-testnet.stellar.org",
   mainnet: "https://mainnet.sorobanrpc.com"
@@ -34,15 +35,6 @@ interface Answers {
   rpcUrl: string;
   contractId: string;
   verbosity: "quiet" | "normal" | "verbose";
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-
-  return value;
 }
 
 function randomSecret(): bigint {
@@ -99,7 +91,7 @@ async function collectAnswers(rl: readline.Interface): Promise<Answers> {
     return undefined;
   });
 
-  const contractId = await ask(rl, "Contract address", TESTNET_CONTRACT_ID, (value) => {
+  const contractId = await ask(rl, "Registry contract address", TESTNET_REGISTRY_CONTRACT_ID, (value) => {
     if (!CONTRACT_PATTERN.test(value)) {
       return "Invalid contract address. Expected a 56-character Soroban contract ID starting with 'C'.";
     }
@@ -127,35 +119,21 @@ async function verifyAndReport(opts: {
   publicSignals: string[];
   rpcUrl: string;
   contractId: string;
-  keypair: Keypair;
   log: (line: string, level?: Answers["verbosity"]) => void;
 }): Promise<void> {
-  const bundle: ProofBundle = {
-    proof: opts.proof,
-    publicSignals: opts.publicSignals,
-    circuit: "poseidon_preimage",
-    generatedAt: new Date().toISOString(),
-    networkPassphrase: Networks.TESTNET
-  };
+  opts.log("simulating verify_proof against the registry...", "verbose");
 
-  opts.log("submitting to the verifier contract...", "verbose");
-
-  const result = await verifyOnChain({
+  const verified = await verifyViaRegistry({
     rpcUrl: opts.rpcUrl,
-    contractId: opts.contractId,
-    keypair: opts.keypair,
-    bundle
+    registryContractId: opts.contractId,
+    circuitId: POSEIDON_PREIMAGE_CIRCUIT_ID,
+    calldata: formatProof(opts.proof, opts.publicSignals)
   });
 
-  opts.log(`txHash: ${result.txHash}`, "normal");
-  opts.log(`ledger: ${result.ledger}`, "verbose");
-  opts.log(`fee: ${result.fee}`, "verbose");
-  console.log(`✓ Proof verified on-chain: ${result.verified}`);
+  console.log(`✓ Proof verified on-chain: ${verified}`);
 }
 
 async function main(): Promise<void> {
-  const secretKey = requireEnv("SOROBAN_SECRET_KEY");
-
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
     rl.close();
@@ -194,7 +172,6 @@ async function main(): Promise<void> {
   };
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath);
-  const keypair = Keypair.fromSecret(secretKey);
 
   console.log("\n=== Scenario 1: success — valid proof ===");
   await verifyAndReport({
@@ -202,7 +179,6 @@ async function main(): Promise<void> {
     publicSignals,
     rpcUrl: answers.rpcUrl,
     contractId: answers.contractId,
-    keypair,
     log
   });
 
@@ -218,7 +194,6 @@ async function main(): Promise<void> {
     publicSignals: [wrongCommitment.toString()],
     rpcUrl: answers.rpcUrl,
     contractId: answers.contractId,
-    keypair,
     log
   });
 

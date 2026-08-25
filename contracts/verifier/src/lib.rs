@@ -55,6 +55,7 @@ pub struct ContractConfig {
 #[contracttype]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Limits,
     Vk,
     CallCount(Address, u32),
@@ -67,8 +68,12 @@ enum DataKey {
 #[repr(u32)]
 pub enum Error {
     NotInitialized = 1,
+    RateLimitExceeded = 2,
     InvalidWindowSize = 3,
+    ProofExpired = 4,
+    CallerNotAllowed = 5,
     InvalidVerifyingKey = 6,
+    NoPendingAdmin = 7,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -234,6 +239,57 @@ impl VerifierContract {
         })
     }
 
+    /// Propose `new_admin` as the next admin. Requires the *current* admin's
+    /// auth. Does not take effect until `new_admin` calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// The address currently proposed via `propose_admin`, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Promote the pending admin to admin. Requires the *pending* admin's
+    /// own auth — the current admin cannot force this through.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Replace this contract's executable with `new_wasm_hash`. Requires the
+    /// current admin's auth. The wasm must already be uploaded (see
+    /// `env.deployer().upload_contract_wasm`) before this call.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
     pub fn verify_proof(
         env: Env,
         caller: Address,
@@ -244,104 +300,107 @@ impl VerifierContract {
     ) -> Result<bool, Error> {
         caller.require_auth();
 
-        let inputs_hash = compute_inputs_hash(&env, &public_inputs);
-        let result = run_verification(&env, &caller, &proof_a, &proof_b, &proof_c, &public_inputs);
-
-        VerificationResult {
-            success: matches!(result, Ok(true)),
-            caller,
-            inputs_hash,
+        let allowlist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistEnabled)
+            .unwrap_or(false);
+        if allowlist_enabled {
+            let allowed: bool = env
+                .storage()
+                .instance()
+                .get(&DataKey::Allowlist(caller.clone()))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(Error::CallerNotAllowed);
+            }
         }
-        .publish(&env);
 
-        result
+        let limits: Limits = env
+            .storage()
+            .instance()
+            .get(&DataKey::Limits)
+            .ok_or(Error::NotInitialized)?;
+
+        let ledger = env.ledger().sequence();
+        let window_start = ledger - (ledger % limits.window_size);
+        let count_key = DataKey::CallCount(caller.clone(), window_start);
+        let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
+        let next = current + 1;
+        if next > limits.max_calls {
+            return Err(Error::RateLimitExceeded);
+        }
+        env.storage().temporary().set(&count_key, &next);
+        env.storage()
+            .temporary()
+            .extend_ttl(&count_key, limits.window_size, limits.window_size);
+
+        let proof_a = read_g1(&env, &proof_a, "proof_a");
+        let proof_b = read_g2(&env, &proof_b, "proof_b");
+        let proof_c = read_g1(&env, &proof_c, "proof_c");
+
+        if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
+            publish_verification_result(&env, &caller, false, &public_inputs);
+            return Ok(false);
+        }
+
+        let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
+            Some(value) => value,
+            None => {
+                publish_verification_result(&env, &caller, false, &public_inputs);
+                return Ok(false);
+            }
+        };
+
+        if ledger > expiry_ledger {
+            return Err(Error::ProofExpired);
+        }
+
+        let vk: VerifyingKey = env
+            .storage()
+            .instance()
+            .get(&DataKey::Vk)
+            .ok_or(Error::NotInitialized)?;
+
+        let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
+        let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
+        let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
+        let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
+        let vk_ic0 = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
+        let vk_ic1 = Bn254G1Affine::from_bytes(vk.ic.get(1).unwrap());
+
+        let public_input = Bn254Fr::from_bytes(public_inputs.get(0).unwrap());
+        let vk_x = vk_ic0 + (vk_ic1 * public_input);
+
+        let verified = env.crypto().bn254().pairing_check(
+            vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
+            vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
+        );
+
+        publish_verification_result(&env, &caller, verified, &public_inputs);
+        Ok(verified)
     }
 }
 
-fn run_verification(
+/// Publish the `verification_result` event for an outcome that returns via
+/// `Ok(...)`. Deliberately not called on the `Err(...)` paths above — Soroban
+/// rolls back all events published during a call that ultimately returns
+/// `Err` from a `#[contracterror]` `Result`, so publishing there would be a
+/// silent no-op. Those paths are already visible to callers as a failed
+/// transaction with a specific error code, which is at least as informative
+/// as this event's bare `success: bool` would be.
+fn publish_verification_result(
     env: &Env,
     caller: &Address,
-    proof_a: &Bytes,
-    proof_b: &Bytes,
-    proof_c: &Bytes,
+    success: bool,
     public_inputs: &Vec<BytesN<32>>,
-) -> Result<bool, Error> {
-    let allowlist_enabled: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::AllowlistEnabled)
-        .unwrap_or(false);
-    if allowlist_enabled {
-        let allowed: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist(caller.clone()))
-            .unwrap_or(false);
-        if !allowed {
-            // Not Err: a #[contracterror] Err return rolls back events published
-            // during this call, and every outcome path must leave one behind.
-            return Ok(false);
-        }
+) {
+    VerificationResult {
+        success,
+        caller: caller.clone(),
+        inputs_hash: compute_inputs_hash(env, public_inputs),
     }
-
-    let limits: Limits = env
-        .storage()
-        .instance()
-        .get(&DataKey::Limits)
-        .ok_or(Error::NotInitialized)?;
-
-    let ledger = env.ledger().sequence();
-    let window_start = ledger - (ledger % limits.window_size);
-    let count_key = DataKey::CallCount(caller.clone(), window_start);
-    let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
-    let next = current + 1;
-    if next > limits.max_calls {
-        return Ok(false);
-    }
-    env.storage().temporary().set(&count_key, &next);
-    env.storage()
-        .temporary()
-        .extend_ttl(&count_key, limits.window_size, limits.window_size);
-
-    let proof_a = read_g1(env, proof_a, "proof_a");
-    let proof_b = read_g2(env, proof_b, "proof_b");
-    let proof_c = read_g1(env, proof_c, "proof_c");
-
-    if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
-        return Ok(false);
-    }
-
-    let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
-        Some(value) => value,
-        None => return Ok(false),
-    };
-
-    if ledger > expiry_ledger {
-        return Ok(false);
-    }
-
-    let vk: VerifyingKey = env
-        .storage()
-        .instance()
-        .get(&DataKey::Vk)
-        .ok_or(Error::NotInitialized)?;
-
-    let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
-    let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
-    let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
-    let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
-    let vk_ic0 = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
-    let vk_ic1 = Bn254G1Affine::from_bytes(vk.ic.get(1).unwrap());
-
-    let public_input = Bn254Fr::from_bytes(public_inputs.get(0).unwrap());
-    let vk_x = vk_ic0 + (vk_ic1 * public_input);
-
-    let verified = env.crypto().bn254().pairing_check(
-        vec![env, proof_a, -vk_alpha, -vk_x, -proof_c],
-        vec![env, proof_b, vk_beta, vk_gamma, vk_delta],
-    );
-
-    Ok(verified)
+    .publish(env);
 }
 
 fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {

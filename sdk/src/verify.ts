@@ -222,6 +222,101 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 }
 
 // ---------------------------------------------------------------------------
+// estimateVerifyFee — dry-run verifyOnChain's transaction via
+// simulateTransaction to estimate its fee before submitting
+// ---------------------------------------------------------------------------
+
+const STROOPS_PER_XLM = 10_000_000n;
+
+function stroopsToXlm(stroops: bigint): string {
+  const whole = stroops / STROOPS_PER_XLM;
+  const fraction = (stroops % STROOPS_PER_XLM).toString().padStart(7, "0").replace(/0+$/, "");
+  return fraction.length > 0 ? `${whole}.${fraction}` : whole.toString();
+}
+
+/**
+ * The estimated fee for a {@link verifyOnChain} call.
+ */
+export interface EstimateVerifyFeeResult {
+  /** Estimated total transaction fee, in stroops. */
+  stroops: bigint;
+  /** The same fee, formatted as an XLM decimal string. */
+  xlm: string;
+}
+
+/**
+ * Dry-run the exact transaction {@link verifyOnChain} would submit, via
+ * `simulateTransaction`, and return its estimated fee without signing or
+ * submitting anything.
+ *
+ * The total fee a Soroban transaction ends up paying is the classic base fee
+ * plus the resource fee simulation reports (`minResourceFee`) — the same sum
+ * `prepareTransaction` assembles onto the transaction before signing. See
+ * `@stellar/stellar-sdk`'s `assembleTransaction` for that derivation.
+ *
+ * @example
+ * ```ts
+ * const { stroops, xlm } = await estimateVerifyFee({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ *   keypair,
+ *   bundle,
+ * });
+ * console.log(`estimated fee: ${xlm} XLM (${stroops} stroops)`);
+ * ```
+ */
+export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVerifyFeeResult> {
+  const calldata = resolveCalldata(opts);
+  validateCalldata(calldata);
+
+  try {
+    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+    const network = await server.getNetwork();
+
+    if (opts.bundle) {
+      assertBundleNetwork(opts.bundle, network.passphrase);
+    }
+
+    const account = await server.getAccount(opts.keypair.publicKey());
+    const contract = new Contract(opts.contractId);
+    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(
+        contract.call(
+          "verify_proof",
+          callerScVal,
+          makeBytesScVal(calldata.proofA),
+          makeBytesScVal(calldata.proofB),
+          makeBytesScVal(calldata.proofC),
+          makePublicInputsScVal(calldata.publicInputs)
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw classifyError(new Error(simResult.error));
+    }
+
+    const stroops = BigInt(BASE_FEE) + BigInt(simResult.minResourceFee);
+
+    return { stroops, xlm: stroopsToXlm(stroops) };
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
+
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // verifyViaRegistry — verify a proof against a circuit registered with
 // contracts/registry, keyed by circuit ID instead of a hardcoded VK
 // ---------------------------------------------------------------------------

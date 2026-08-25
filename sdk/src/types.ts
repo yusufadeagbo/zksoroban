@@ -14,6 +14,20 @@ export interface SorobanProofCalldata {
   publicInputs: Buffer[];
 }
 
+/**
+ * A Groth16 verifying key encoded into the raw-bytes layout
+ * `contracts/registry`'s `register_circuit(id, vk)` expects — the same
+ * BN254 G1/G2 point encoding {@link SorobanProofCalldata} uses for a proof,
+ * applied to a verifying key's `alpha`/`beta`/`gamma`/`delta`/`IC` instead.
+ */
+export interface RegistryVerifyingKey {
+  alpha: Buffer;
+  beta: Buffer;
+  gamma: Buffer;
+  delta: Buffer;
+  ic: Buffer[];
+}
+
 export interface VerificationKey {
   protocol: string;
   curve: string;
@@ -81,7 +95,11 @@ export enum SorobanZkErrorCode {
   RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
   INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
   PROOF_EXPIRED = "PROOF_EXPIRED",
-  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED"
+  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED",
+  // Witness/proof computation itself failed (e.g. a wasm/zkey mismatch, or an
+  // input that doesn't satisfy the circuit's constraints) — distinct from
+  // INVALID_PROOF_FORMAT, which is about a proof's on-the-wire shape.
+  PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED"
 }
 
 export class SorobanZkError extends Error {
