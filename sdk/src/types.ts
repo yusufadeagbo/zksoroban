@@ -81,7 +81,11 @@ export enum SorobanZkErrorCode {
   RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
   INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
   PROOF_EXPIRED = "PROOF_EXPIRED",
-  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED"
+  CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED",
+  // Witness/proof computation itself failed (e.g. a wasm/zkey mismatch, or an
+  // input that doesn't satisfy the circuit's constraints) — distinct from
+  // INVALID_PROOF_FORMAT, which is about a proof's on-the-wire shape.
+  PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED"
 }
 
 export class SorobanZkError extends Error {
