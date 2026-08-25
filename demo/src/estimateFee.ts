@@ -80,6 +80,12 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  console.error(error);
+  // Network passphrases (e.g. "Test SDF Network ; September 2015") are
+  // public network identifiers shipped in every Stellar SDK release, not
+  // credentials — CodeQL's clear-text-logging heuristic flags any property
+  // literally named "*passphrase*" regardless of sensitivity. A
+  // NetworkMismatchError's message can include one, which is why this trips
+  // js/clear-text-logging; there's nothing secret being logged here.
+  console.error(error); // codeql[js/clear-text-logging]
   process.exit(1);
 });
