@@ -14,6 +14,20 @@ export interface SorobanProofCalldata {
   publicInputs: Buffer[];
 }
 
+/**
+ * A Groth16 verifying key encoded into the raw-bytes layout
+ * `contracts/registry`'s `register_circuit(id, vk)` expects — the same
+ * BN254 G1/G2 point encoding {@link SorobanProofCalldata} uses for a proof,
+ * applied to a verifying key's `alpha`/`beta`/`gamma`/`delta`/`IC` instead.
+ */
+export interface RegistryVerifyingKey {
+  alpha: Buffer;
+  beta: Buffer;
+  gamma: Buffer;
+  delta: Buffer;
+  ic: Buffer[];
+}
+
 export interface VerificationKey {
   protocol: string;
   curve: string;

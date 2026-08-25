@@ -21,6 +21,10 @@ const CASES: GoldenCase[] = [
   {
     name: "estimate-fee",
     argv: ["estimate-fee", "--proof", `${INPUTS}/proof.json`, "--public", `${INPUTS}/public.json`]
+  },
+  {
+    name: "format-vk",
+    argv: ["format-vk", "--vk", `${INPUTS}/verification_key.json`, "--id", "2"]
   }
 ];
 
