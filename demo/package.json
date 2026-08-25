@@ -7,7 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json --noEmit",
     "start": "ts-node src/run.ts",
-    "demo": "ts-node src/run.ts"
+    "demo": "ts-node src/run.ts",
+    "estimate-fee": "ts-node src/estimateFee.ts"
   },
   "dependencies": {
     "@zksoroban/sdk": "file:../sdk",
