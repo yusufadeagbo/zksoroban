@@ -64,6 +64,22 @@ What `zksoroban` actually provides, end to end:
   the admin key is now a full trust anchor for soundness, not just
   availability. It still cannot read any private witness — nothing
   about `update_vk` exposes what any prover's `secret` was.
+- **The admin key can now replace the contract's code entirely, on both
+  `contracts/verifier` and `contracts/registry`.** As of the two-step
+  admin transfer and `upgrade` mechanism (see
+  [zksoroban#12](https://github.com/yusufadeagbo/zksoroban/issues/12)
+  and [`docs/architecture.md`](architecture.md#admin-ownership--contract-upgrades)),
+  a compromised admin key is no longer limited to what `update_vk` and
+  `set_limits` can express — `upgrade(new_wasm_hash)` swaps the running
+  wasm for anything already uploaded to the network, so a compromised
+  admin can make the contract do literally anything: accept invalid
+  proofs unconditionally, drain any balances it holds, or brick itself.
+  The two-step `propose_admin`/`accept_admin` handoff limits how an
+  admin key can be *transferred* (the recipient must itself authorize
+  accepting it, so a compromised key can't silently hand control to an
+  attacker-controlled address the real admin never agreed to) but does
+  nothing to limit what an *already-compromised, still-current* admin
+  key can do — that key alone is sufficient to upgrade the contract.
 - **The BN254 pairing and Poseidon hash are assumed secure.** Like any
   Groth16/BN254 system, this stack inherits the standard cryptographic
   assumptions of that curve and hash function. `zksoroban` does not

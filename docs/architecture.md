@@ -238,6 +238,58 @@ targets the live registry (circuit ID `1`, `poseidon_preimage`) via
 own `verify_proof(caller, ...)` signature is what `verifyOnChain`
 speaks.
 
+## Admin Ownership & Contract Upgrades
+
+Both `contracts/verifier` and `contracts/registry` share the same
+two-step admin transfer and self-upgrade mechanism — see
+[zksoroban#12](https://github.com/yusufadeagbo/zksoroban/issues/12).
+
+### Two-step admin transfer
+
+Rotating the admin address is a two-call handshake, not a single
+"set new admin" call, so a mistyped or unreachable address can never
+strand the contract without a working admin:
+
+1. `propose_admin(new_admin)` — requires the **current** admin's auth.
+   Stores `new_admin` as pending; the current admin is unchanged until
+   step 2 completes.
+2. `accept_admin()` — requires the **pending** admin's own auth, not the
+   current admin's. Promotes the pending admin to admin and clears the
+   pending slot.
+
+`pending_admin()` is a read-only getter for whatever is currently
+proposed (`None` if nothing is pending). Calling `accept_admin` with
+nothing pending fails — `Err(Error::NoPendingAdmin)` on
+`contracts/verifier`, a panic on `contracts/registry` (matching that
+contract's existing panic-based error handling; it has no
+`#[contracterror]` type today).
+
+`propose_admin` and `accept_admin` never touch the contract's wasm or any
+other state — they only ever change who the admin address is.
+
+### Upgrade
+
+`upgrade(new_wasm_hash)` — requires the current admin's auth — calls
+`env.deployer().update_current_contract_wasm(new_wasm_hash)`, replacing
+the contract's executable in place. The contract's address and storage
+are untouched; only the code behind them changes. The new wasm must
+already be uploaded to the network
+(`env.deployer().upload_contract_wasm`) before calling `upgrade` — the
+host rejects a hash that isn't already-uploaded code. The swap doesn't
+take effect until the current invocation finishes, so a contract can't
+upgrade itself mid-call and then keep running as the new code.
+
+### Out of scope (per #12)
+
+No timelock on either the handoff or the upgrade, no governance/voting,
+and no proxy pattern — both contracts upgrade their own executable in
+place rather than sitting behind a separate, swappable proxy address. A
+compromised admin key can immediately upgrade either contract to
+arbitrary code, and can propose an ownership handoff (though not force
+one through — `accept_admin` still needs the *recipient's* own auth).
+See [`docs/security-model.md`](security-model.md)'s Trust Assumptions for
+what a compromised admin key can do.
+
 ## Design Choices
 
 Why the verifier keeps its state minimal (admin + rate-limit counters,

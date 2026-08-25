@@ -1,8 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, IntoVal, Vec};
 
 const POSEIDON_CIRCUIT_ID: u32 = 1;
 const RANGE_PROOF_CIRCUIT_ID: u32 = 2;
@@ -698,4 +698,101 @@ fn verify_proof_returns_false_for_wrong_public_input_count() {
     );
 
     assert!(!result);
+}
+
+// Two-step admin transfer and upgrade (#12).
+
+#[test]
+fn admin_ownership_handoff_succeeds() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.pending_admin(), Some(new_admin.clone()));
+
+    client.accept_admin();
+    assert_eq!(client.pending_admin(), None);
+    assert_eq!(client.admin(), new_admin);
+}
+
+#[test]
+#[should_panic]
+fn propose_admin_rejects_non_admin_caller() {
+    let (env, _admin, client) = setup();
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "propose_admin",
+                args: (&new_admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .propose_admin(&new_admin);
+}
+
+#[test]
+#[should_panic]
+fn accept_admin_rejects_non_pending_admin_caller() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    let new_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: ().into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .accept_admin();
+}
+
+#[test]
+#[should_panic]
+fn accept_admin_fails_without_pending_admin() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+
+    client.accept_admin();
+}
+
+#[test]
+fn upgrade_succeeds_for_admin() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    client.upgrade(&wasm_hash);
+}
+
+#[test]
+#[should_panic]
+fn upgrade_rejects_non_admin_caller() {
+    let (env, _admin, client) = setup();
+    let attacker = Address::generate(&env);
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "upgrade",
+                args: (&wasm_hash,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .upgrade(&wasm_hash);
 }

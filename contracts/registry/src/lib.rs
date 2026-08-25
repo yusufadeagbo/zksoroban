@@ -22,6 +22,7 @@ pub struct VerifyingKey {
 #[contracttype]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Circuit(u32),
 }
 
@@ -39,6 +40,54 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .expect("registry is not initialized")
+    }
+
+    /// Propose `new_admin` as the next admin. Requires the *current* admin's
+    /// auth. Does not take effect until `new_admin` calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("registry is not initialized");
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+    }
+
+    /// The address currently proposed via `propose_admin`, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Promote the pending admin to admin. Requires the *pending* admin's
+    /// own auth — the current admin cannot force this through.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("no pending admin");
+        pending.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+    }
+
+    /// Replace this contract's executable with `new_wasm_hash`. Requires the
+    /// current admin's auth. The wasm must already be uploaded (see
+    /// `env.deployer().upload_contract_wasm`) before this call.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("registry is not initialized");
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     pub fn register_circuit(env: Env, id: u32, vk: VerifyingKey) {

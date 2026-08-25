@@ -55,6 +55,7 @@ pub struct ContractConfig {
 #[contracttype]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Limits,
     Vk,
     CallCount(Address, u32),
@@ -72,6 +73,7 @@ pub enum Error {
     ProofExpired = 4,
     CallerNotAllowed = 5,
     InvalidVerifyingKey = 6,
+    NoPendingAdmin = 7,
 }
 
 #[contract]
@@ -225,6 +227,57 @@ impl VerifierContract {
             timelock_delay: None,
             allowlist_enabled,
         })
+    }
+
+    /// Propose `new_admin` as the next admin. Requires the *current* admin's
+    /// auth. Does not take effect until `new_admin` calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// The address currently proposed via `propose_admin`, if any.
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Promote the pending admin to admin. Requires the *pending* admin's
+    /// own auth — the current admin cannot force this through.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingAdmin)?;
+        pending.require_auth();
+
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
+    /// Replace this contract's executable with `new_wasm_hash`. Requires the
+    /// current admin's auth. The wasm must already be uploaded (see
+    /// `env.deployer().upload_contract_wasm`) before this call.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     pub fn verify_proof(
