@@ -427,6 +427,43 @@ fn stale_instance_storage_call_count_entries_are_ignored() {
 }
 
 #[test]
+fn call_count_storage_does_not_grow_unbounded_across_many_callers_and_windows() {
+    // This is #178's actual scenario, at scale: under the old code, every
+    // one of these (caller, window) pairs would be a permanent instance-
+    // storage entry, making every future call to the contract — from
+    // anyone — a little more expensive forever. Under the fix, none of
+    // them ever touch instance storage at all.
+    const CALLERS: u32 = 20;
+    const WINDOWS: u32 = 5;
+    const WINDOW_SIZE: u32 = 10;
+
+    let (env, _admin, client) = setup(1000, WINDOW_SIZE);
+    let mut keys = std::vec::Vec::new();
+
+    for w in 0..WINDOWS {
+        env.ledger().with_mut(|li| {
+            li.sequence_number = w * WINDOW_SIZE;
+        });
+
+        for _ in 0..CALLERS {
+            let caller = Address::generate(&env);
+            assert!(call_valid(&env, &client, &caller));
+            keys.push(call_count_key(&env, &caller, WINDOW_SIZE));
+        }
+    }
+
+    assert_eq!(keys.len(), (CALLERS * WINDOWS) as usize);
+    env.as_contract(&client.address, || {
+        for key in &keys {
+            assert!(
+                !env.storage().instance().has(key),
+                "a CallCount entry leaked into instance storage"
+            );
+        }
+    });
+}
+
+#[test]
 fn separate_callers_have_independent_counters() {
     let (env, _admin, client) = setup(1, 100);
     let alice = Address::generate(&env);
