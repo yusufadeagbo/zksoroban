@@ -81,14 +81,13 @@ function classifyError(error: unknown): SorobanZkError {
 }
 
 function decodeReturnValueFromDiagnostics(
-  diagnosticEventsXdr: string[] | undefined
+  diagnosticEventsXdr: xdr.DiagnosticEvent[] | undefined
 ): boolean | undefined {
   if (!diagnosticEventsXdr) {
     return undefined;
   }
 
-  for (const encoded of diagnosticEventsXdr) {
-    const event = xdr.DiagnosticEvent.fromXDR(encoded, "base64");
+  for (const event of diagnosticEventsXdr) {
     const contractEvent = event.event();
     const topics = contractEvent.body().v0().topics();
     if (topics.length < 2) {
@@ -102,6 +101,27 @@ function decodeReturnValueFromDiagnostics(
   }
 
   return undefined;
+}
+
+/**
+ * Decode `verify_proof`'s return value from a successful transaction.
+ *
+ * Prefers `returnValue`, which soroban-rpc derives from the transaction's
+ * result meta and is present on every successful invocation. Falls back to
+ * scanning diagnostic events for the legacy `fn_return` marker, since some
+ * RPC providers disable diagnostics. Returns `undefined` when neither source
+ * carries a decodable value — the caller must treat that as an error rather
+ * than coercing it to `false`, which would be indistinguishable from a real
+ * on-chain rejection.
+ */
+function decodeVerifyReturnValue(result: {
+  returnValue?: xdr.ScVal;
+  diagnosticEventsXdr?: xdr.DiagnosticEvent[];
+}): boolean | undefined {
+  if (result.returnValue) {
+    return Boolean(scValToNative(result.returnValue));
+  }
+  return decodeReturnValueFromDiagnostics(result.diagnosticEventsXdr);
 }
 
 export function assertBundleNetwork(bundle: ProofBundle, networkPassphrase: string): void {
@@ -171,7 +191,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
     const started = Date.now();
     while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
-      const result = await server._getTransaction(sendResult.hash);
+      const result = await server.getTransaction(sendResult.hash);
 
       if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -192,7 +212,6 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
         );
       }
 
-      const returnValue = decodeReturnValueFromDiagnostics(result.diagnosticEventsXdr);
       if (typeof result.ledger !== "number" || !result.resultXdr) {
         throw new SorobanZkError(
           `Transaction ${result.txHash} did not include the expected success payload`,
@@ -200,11 +219,19 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
         );
       }
 
+      const returnValue = decodeVerifyReturnValue(result);
+      if (typeof returnValue !== "boolean") {
+        throw new SorobanZkError(
+          `Transaction ${result.txHash} carried no decodable verify_proof return value`,
+          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+        );
+      }
+
       return {
-        verified: Boolean(returnValue),
+        verified: returnValue,
         txHash: result.txHash,
         ledger: result.ledger,
-        fee: feeFromResult(xdr.TransactionResult.fromXDR(result.resultXdr, "base64"))
+        fee: feeFromResult(result.resultXdr)
       };
     }
 

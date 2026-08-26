@@ -31,7 +31,7 @@ function withStubbedServer(
   });
 }
 
-function buildFnReturnDiagnosticEvent(value: boolean): string {
+function buildFnReturnDiagnosticEvent(value: boolean): xdr.DiagnosticEvent {
   const v0 = new xdr.ContractEventV0({
     topics: [xdr.ScVal.scvSymbol("fn_return"), xdr.ScVal.scvSymbol("verify_proof")],
     data: xdr.ScVal.scvBool(value)
@@ -43,37 +43,38 @@ function buildFnReturnDiagnosticEvent(value: boolean): string {
     type: xdr.ContractEventType.contract(),
     body
   });
-  const diagnostic = new xdr.DiagnosticEvent({
+  return new xdr.DiagnosticEvent({
     inSuccessfulContractCall: true,
     event
   });
-  return diagnostic.toXDR("base64");
 }
 
-function buildTransactionResultXdr(feeCharged = "100"): string {
+function buildTransactionResult(feeCharged = "100"): xdr.TransactionResult {
   const result = xdr.TransactionResultResult.txSuccess([]);
   const ext = new xdr.TransactionResultExt(0);
-  const tr = new xdr.TransactionResult({
+  return new xdr.TransactionResult({
     feeCharged: xdr.Int64.fromString(feeCharged),
     result,
     ext
   });
-  return tr.toXDR("base64");
 }
 
-const DEFAULT_OPTS: VerifyOptions = {
-  rpcUrl: "http://localhost:8000",
-  contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
-  keypair: STUB_KEYPAIR,
-  calldata: {
-    proofA: Buffer.alloc(64, 1),
-    proofB: Buffer.alloc(128, 2),
-    proofC: Buffer.alloc(64, 3),
-    publicInputs: [Buffer.alloc(32, 4)]
-  }
-};
+// Matches rpc.Api.GetSuccessfulTransactionResponse: resultXdr is already a
+// parsed object, returnValue comes from result meta, diagnosticEventsXdr is
+// an array of parsed DiagnosticEvent.
+interface StubSuccessTx {
+  status: typeof rpc.Api.GetTransactionStatus.SUCCESS;
+  txHash: string;
+  ledger: number;
+  resultXdr: xdr.TransactionResult;
+  returnValue?: xdr.ScVal;
+  diagnosticEventsXdr?: xdr.DiagnosticEvent[];
+}
 
-function buildSuccessStub(capturedArgs: { args?: xdr.ScVal[] }) {
+function buildSuccessStub(
+  capturedArgs: { args?: xdr.ScVal[] },
+  txOverrides: Partial<StubSuccessTx> = {}
+) {
   return {
     getNetwork: async () => ({ passphrase: STUB_PASSPHRASE }),
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
@@ -83,11 +84,12 @@ function buildSuccessStub(capturedArgs: { args?: xdr.ScVal[] }) {
       return tx;
     },
     sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
-    _getTransaction: async () => ({
+    getTransaction: async (): Promise<StubSuccessTx> => ({
       status: rpc.Api.GetTransactionStatus.SUCCESS,
+      txHash: "b".repeat(64),
       ledger: 12345,
-      resultXdr: buildTransactionResultXdr(),
-      diagnosticEventsXdr: [buildFnReturnDiagnosticEvent(true)]
+      resultXdr: buildTransactionResult(),
+      ...txOverrides
     })
   };
 }
@@ -102,11 +104,27 @@ function buildSimulationErrorStub(message: string) {
   };
 }
 
+const DEFAULT_OPTS: VerifyOptions = {
+  rpcUrl: "http://localhost:8000",
+  contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+  keypair: STUB_KEYPAIR,
+  calldata: {
+    proofA: Buffer.alloc(64, 1),
+    proofB: Buffer.alloc(128, 2),
+    proofC: Buffer.alloc(64, 3),
+    publicInputs: [Buffer.alloc(32, 4)]
+  }
+};
+
 test("verifyOnChain passes caller as the first verify_proof argument", async () => {
   const captured: { args?: xdr.ScVal[] } = {};
 
   await withStubbedServer(
-    () => buildSuccessStub(captured),
+    () =>
+      buildSuccessStub(captured, {
+        // Canonical path: returnValue present, no diagnostics needed.
+        returnValue: xdr.ScVal.scvBool(true)
+      }),
     async () => {
       const result = await verifyOnChain(DEFAULT_OPTS);
       assert.equal(result.verified, true);
@@ -116,6 +134,88 @@ test("verifyOnChain passes caller as the first verify_proof argument", async () 
 
       const callerAddress = stellarSdk.Address.fromScVal(captured.args![0]);
       assert.equal(callerAddress.toString(), STUB_KEYPAIR.publicKey());
+    }
+  );
+});
+
+test("verifyOnChain decodes returnValue=false without diagnostic events", async () => {
+  await withStubbedServer(
+    () =>
+      buildSuccessStub({}, { returnValue: xdr.ScVal.scvBool(false) }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, false);
+    }
+  );
+});
+
+test("verifyOnChain falls back to fn_return diagnostics when returnValue is absent", async () => {
+  await withStubbedServer(
+    () =>
+      buildSuccessStub({}, {
+        diagnosticEventsXdr: [buildFnReturnDiagnosticEvent(true)]
+      }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, true);
+    }
+  );
+});
+
+test("verifyOnChain falls back to fn_return=false diagnostics", async () => {
+  await withStubbedServer(
+    () =>
+      buildSuccessStub({}, {
+        diagnosticEventsXdr: [buildFnReturnDiagnosticEvent(false)]
+      }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, false);
+    }
+  );
+});
+
+test("verifyOnChain prefers returnValue over a contradicting diagnostic event", async () => {
+  await withStubbedServer(
+    () =>
+      buildSuccessStub({}, {
+        returnValue: xdr.ScVal.scvBool(false),
+        diagnosticEventsXdr: [buildFnReturnDiagnosticEvent(true)]
+      }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, false);
+    }
+  );
+});
+
+test("verifyOnChain throws instead of reporting false when no return value is decodable", async () => {
+  await withStubbedServer(
+    () => buildSuccessStub({}),
+    async () => {
+      await assert.rejects(
+        verifyOnChain(DEFAULT_OPTS),
+        (err: unknown) => {
+          assert.ok(err instanceof SorobanZkError);
+          assert.equal(err.code, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
+          assert.match(err.message, /no decodable verify_proof return value/);
+          return true;
+        }
+      );
+    }
+  );
+});
+
+test("verifyOnChain reports the fee from the transaction result", async () => {
+  await withStubbedServer(
+    () =>
+      buildSuccessStub({}, {
+        returnValue: xdr.ScVal.scvBool(true),
+        resultXdr: buildTransactionResult("12345")
+      }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.fee, "12345");
     }
   );
 });
