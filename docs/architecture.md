@@ -78,7 +78,15 @@ Public API:
 
 - `poseidon(inputs: bigint[]): bigint`
 - `formatProof(proof, publicSignals): SorobanProofCalldata`
-- `verifyOnChain(opts): Promise<VerifyResult>`
+- `formatVerifyingKey(vk): RegistryVerifyingKey`
+- `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction
+- `verifyViaRegistry(opts): Promise<boolean>` — `contracts/registry`, simulation-only
+- `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
+- `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
+- `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
+- `getContractConfig(opts): Promise<ContractConfig>`
+
+See [Batch Verification](#batch-verification) below for the two batch functions.
 
 The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at call time.
 
@@ -291,6 +299,89 @@ targets the live registry (circuit ID `1`, `poseidon_preimage`) via
 `sdk/src/verify.ts`'s `verifyViaRegistry`, and `contracts/verifier`'s
 own `verify_proof(caller, ...)` signature is what `verifyOnChain`
 speaks.
+
+## Batch Verification
+
+Both contracts have a `verify_batch` entry point alongside `verify_proof`,
+so an application that needs to check many proofs pays one transaction's
+overhead instead of one per proof — see
+[zksoroban#13](https://github.com/yusufadeagbo/zksoroban/issues/13).
+
+### `contracts/verifier::verify_batch`
+
+```rust
+verify_batch(caller: Address, proofs: Vec<ProofItem>) -> Result<Vec<bool>, Error>
+```
+
+One caller, many proofs — `caller.require_auth()` happens once for the
+whole batch, not once per item. Each `ProofItem` (`proof_a`, `proof_b`,
+`proof_c`, `public_inputs` — the same fields `verify_proof` takes, minus
+`caller`) is still run through the *exact* allowlist/rate-limit/expiry/
+pairing logic `verify_proof` uses (both now call a shared internal
+`verify_one`), in order, against the same rate-limit counter — so an
+earlier proof in the batch consuming budget can cause a later one in the
+*same* batch to come back `false` for exceeding the limit.
+
+The one behavior batch deliberately does **not** share with
+`verify_proof`: a per-item allowlist/rate-limit/expiry rejection never
+fails the call. `verify_batch` only returns `Err(...)` for
+`Error::NotInitialized` — a genuinely batch-invalidating condition (the
+contract itself isn't set up) — never for an individual bad proof, which
+just becomes `false` in the result vec. This is why batch can also do
+something `verify_proof` can't: publish a `verification_result` event for
+*every* item, rejected or not. `verify_proof`'s own event is deliberately
+skipped on its `Err(...)` paths (see [Events](#events) above) because
+that `Err` rolls back the whole call, making publishing there a silent
+no-op — but a per-item rejection inside `verify_batch` never rolls back
+the batch call itself, so its event survives, unlike a standalone
+`verify_proof` call for the same rejected proof would.
+
+### `contracts/registry::verify_batch`
+
+```rust
+verify_batch(batch: Vec<BatchItem>) -> Vec<bool>
+```
+
+Each `BatchItem` adds a `circuit_id: u32` field on top of the same proof
+fields, so one call can batch proofs against *different* circuits —
+the main reason batching is more valuable against the registry than the
+single-circuit verifier (see the issue's scoping note). No auth, no
+`Result` — same as `verify_proof(id, ...)`, every outcome (including an
+unknown circuit ID) is just `true`/`false`, and every item gets its own
+event unconditionally, with no `Err`-rollback subtlety to work around at
+all.
+
+### SDK
+
+- `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — targets
+  `contracts/verifier`, mirrors `verifyOnChain`: requires a `keypair`
+  (real auth, real rate-limit mutation) and submits one signed
+  transaction.
+- `verifyBatchViaRegistry(opts): Promise<boolean[]>` — targets
+  `contracts/registry`, mirrors `verifyViaRegistry`: no `keypair`,
+  simulation-only, since the registry's `verify_batch` requires no auth
+  and mutates no storage.
+
+Both encode their `items` array as a single `Vec<ProofItem>` /
+`Vec<BatchItem>` contract argument — one Soroban operation, one
+transaction, regardless of batch size. Each item is a `#[contracttype]
+struct`, which Soroban encodes as a Map keyed by `Symbol`, not `String` —
+the SDK builds these with `nativeToScVal`'s per-field `'symbol'` key-type
+hint rather than its object default (which produces `String` keys and
+would fail to decode on the contract side).
+
+### Demo
+
+`demo/src/batchVerify.ts` is a non-interactive integration script:
+it batch-verifies 3 real proofs — loaded directly from
+`circuits/{range_proof,threshold_2of3,merkle_inclusion}/fixtures/
+{proof,public}.json`, no `circom` toolchain needed — across those 3
+circuit IDs, in one `verifyBatchViaRegistry` call. Run against the live
+Testnet registry (this script's default), every result comes back `false`
+today, for the same reason noted above: only `poseidon_preimage` is
+registered there. Pointed at a registry instance that has the other three
+circuits registered (`SOROBAN_TEST_REGISTRY_CONTRACT_ID`), it asserts
+every result is `true` instead.
 
 ## Admin Ownership & Contract Upgrades
 

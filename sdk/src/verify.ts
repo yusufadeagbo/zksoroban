@@ -4,6 +4,7 @@ import {
   BASE_FEE,
   Contract,
   Keypair,
+  nativeToScVal,
   TransactionBuilder,
   rpc,
   scValToNative,
@@ -15,9 +16,14 @@ import {
   ContractConfig,
   NetworkMismatchError,
   ProofBundle,
+  RegistryBatchItem,
   SorobanProofCalldata,
   SorobanZkError,
   SorobanZkErrorCode,
+  VerifierBatchItem,
+  VerifyBatchOptions,
+  VerifyBatchResult,
+  VerifyBatchViaRegistryOptions,
   VerifyOptions,
   VerifyResult,
   VerifyViaRegistryOptions
@@ -33,6 +39,51 @@ function makeBytesScVal(bytes: Buffer): xdr.ScVal {
 
 function makePublicInputsScVal(publicInputs: Buffer[]): xdr.ScVal {
   return xdr.ScVal.scvVec(publicInputs.map((item) => xdr.ScVal.scvBytes(item)));
+}
+
+// contracts/verifier's `ProofItem` and contracts/registry's `BatchItem` are
+// both `#[contracttype] struct`s, which Soroban encodes as a Map keyed by
+// Symbol (not String) — `nativeToScVal`'s default object handling produces
+// String keys, so every field needs an explicit `'symbol'` key-type hint to
+// match what the contract's derived struct decoder expects.
+function makeProofItemScVal(calldata: SorobanProofCalldata): xdr.ScVal {
+  return nativeToScVal(
+    {
+      proof_a: calldata.proofA,
+      proof_b: calldata.proofB,
+      proof_c: calldata.proofC,
+      public_inputs: calldata.publicInputs
+    },
+    {
+      type: {
+        proof_a: ["symbol", "bytes"],
+        proof_b: ["symbol", "bytes"],
+        proof_c: ["symbol", "bytes"],
+        public_inputs: ["symbol", null]
+      }
+    }
+  );
+}
+
+function makeRegistryBatchItemScVal(circuitId: number, calldata: SorobanProofCalldata): xdr.ScVal {
+  return nativeToScVal(
+    {
+      id: circuitId,
+      proof_a: calldata.proofA,
+      proof_b: calldata.proofB,
+      proof_c: calldata.proofC,
+      public_inputs: calldata.publicInputs
+    },
+    {
+      type: {
+        id: ["symbol", "u32"],
+        proof_a: ["symbol", "bytes"],
+        proof_b: ["symbol", "bytes"],
+        proof_c: ["symbol", "bytes"],
+        public_inputs: ["symbol", null]
+      }
+    }
+  );
 }
 
 function feeFromResult(result: xdr.TransactionResult): string {
@@ -98,6 +149,31 @@ function decodeReturnValueFromDiagnostics(
     const marker = scValToNative(topics[0]);
     if (marker === "fn_return") {
       return Boolean(scValToNative(contractEvent.body().v0().data()));
+    }
+  }
+
+  return undefined;
+}
+
+function decodeBoolArrayFromDiagnostics(
+  diagnosticEventsXdr: string[] | undefined
+): boolean[] | undefined {
+  if (!diagnosticEventsXdr) {
+    return undefined;
+  }
+
+  for (const encoded of diagnosticEventsXdr) {
+    const event = xdr.DiagnosticEvent.fromXDR(encoded, "base64");
+    const contractEvent = event.event();
+    const topics = contractEvent.body().v0().topics();
+    if (topics.length < 2) {
+      continue;
+    }
+
+    const marker = scValToNative(topics[0]);
+    if (marker === "fn_return") {
+      const native = scValToNative(contractEvent.body().v0().data());
+      return Array.isArray(native) ? native.map(Boolean) : undefined;
     }
   }
 
@@ -202,6 +278,125 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
       return {
         verified: Boolean(returnValue),
+        txHash: result.txHash,
+        ledger: result.ledger,
+        fee: feeFromResult(xdr.TransactionResult.fromXDR(result.resultXdr, "base64"))
+      };
+    }
+
+    throw new SorobanZkError(
+      "Timed out waiting for transaction confirmation",
+      SorobanZkErrorCode.NETWORK_ERROR
+    );
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
+
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// verifyBatchOnChain — verify a batch of proofs from one caller against
+// contracts/verifier::verify_batch in a single transaction
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify a batch of proofs from one caller against `contracts/verifier`'s
+ * `verify_batch(caller, proofs)` in a single Stellar transaction.
+ *
+ * Every item is still subject to its own allowlist/rate-limit/expiry check,
+ * applied in order — an earlier item that consumes rate-limit budget affects
+ * whether a later item in the *same* batch passes. Unlike a single
+ * {@link verifyOnChain} call, a rejected item never fails the transaction:
+ * `result.verified[i]` is simply `false` for that item, and every item (not
+ * just the ones that failed) gets its own `verification_result` event.
+ *
+ * @example
+ * ```ts
+ * const result = await verifyBatchOnChain({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ *   keypair,
+ *   items: [
+ *     { proof: proofA, publicSignals: signalsA },
+ *     { proof: proofB, publicSignals: signalsB, expiryLedger: 123456 },
+ *   ],
+ * });
+ * console.log(result.verified); // [true, false]
+ * ```
+ */
+export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<VerifyBatchResult> {
+  if (opts.items.length === 0) {
+    throw new SorobanZkError(
+      "verifyBatchOnChain requires at least one item",
+      SorobanZkErrorCode.INVALID_PROOF_FORMAT
+    );
+  }
+
+  const calldataItems = opts.items.map((item: VerifierBatchItem) =>
+    formatProof(item.proof, item.publicSignals, item.expiryLedger)
+  );
+  calldataItems.forEach(validateCalldata);
+
+  try {
+    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+    const network = await server.getNetwork();
+
+    const account = await server.getAccount(opts.keypair.publicKey());
+    const contract = new Contract(opts.contractId);
+    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
+    const batchScVal = xdr.ScVal.scvVec(calldataItems.map(makeProofItemScVal));
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(contract.call("verify_batch", callerScVal, batchScVal))
+      .setTimeout(30)
+      .build();
+
+    const prepared = await server.prepareTransaction(transaction);
+    prepared.sign(opts.keypair);
+
+    const sendResult = await server.sendTransaction(prepared);
+    if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
+      throw new SorobanZkError(
+        `Transaction submission failed with status ${sendResult.status}`,
+        SorobanZkErrorCode.TRANSACTION_REJECTED
+      );
+    }
+
+    const started = Date.now();
+    while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+      const result = await server._getTransaction(sendResult.hash);
+
+      if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        continue;
+      }
+
+      if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+        // See the identical comment in verifyOnChain: reaching FAILED here
+        // means the transaction was rejected after a successful simulation,
+        // so there's no reliable Error(Contract, #N) string to decode.
+        throw new SorobanZkError(
+          `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
+          SorobanZkErrorCode.TRANSACTION_REJECTED
+        );
+      }
+
+      const returnValue = decodeBoolArrayFromDiagnostics(result.diagnosticEventsXdr);
+      if (typeof result.ledger !== "number" || !result.resultXdr) {
+        throw new SorobanZkError(
+          `Transaction ${result.txHash} did not include the expected success payload`,
+          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+        );
+      }
+
+      return {
+        verified: returnValue ?? [],
         txHash: result.txHash,
         ledger: result.ledger,
         fee: feeFromResult(xdr.TransactionResult.fromXDR(result.resultXdr, "base64"))
@@ -415,6 +610,106 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
     }
 
     return Boolean(scValToNative(simResult.result.retval));
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      throw error;
+    }
+    throw classifyError(error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// verifyBatchViaRegistry — verify a batch of (circuit_id, proof) pairs
+// against contracts/registry::verify_batch in a single simulated call
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify a batch of (circuit, proof) pairs against `contracts/registry`'s
+ * `verify_batch(batch)` in a single simulated call. Batching across
+ * different circuit IDs in one call is the main value of batching against
+ * the registry, since it's the multi-circuit contract.
+ *
+ * Like {@link verifyViaRegistry}, this is simulation-only — no transaction
+ * is submitted, no fee is charged, and no `keypair` is needed, since
+ * `verify_batch` requires no auth and mutates no storage.
+ *
+ * @example
+ * ```ts
+ * const results = await verifyBatchViaRegistry({
+ *   rpcUrl: "https://soroban-testnet.stellar.org",
+ *   registryContractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH",
+ *   items: [
+ *     { circuitId: 1, proof: poseidonProof, publicSignals: poseidonSignals },
+ *     { circuitId: 2, proof: rangeProof, publicSignals: rangeSignals },
+ *   ],
+ * });
+ * console.log(results); // [true, true]
+ * ```
+ */
+export async function verifyBatchViaRegistry(
+  opts: VerifyBatchViaRegistryOptions
+): Promise<boolean[]> {
+  if (opts.items.length === 0) {
+    throw new SorobanZkError(
+      "verifyBatchViaRegistry requires at least one item",
+      SorobanZkErrorCode.INVALID_PROOF_FORMAT
+    );
+  }
+
+  const calldataItems = opts.items.map((item: RegistryBatchItem) => ({
+    circuitId: item.circuitId,
+    calldata: formatProof(item.proof, item.publicSignals)
+  }));
+  calldataItems.forEach(({ calldata }) => validateCalldata(calldata));
+
+  try {
+    const server = new rpc.Server(opts.rpcUrl, {
+      allowHttp: opts.rpcUrl.startsWith("http://")
+    });
+    const network = await server.getNetwork();
+
+    const contract = new Contract(opts.registryContractId);
+
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const batchScVal = xdr.ScVal.scvVec(
+      calldataItems.map(({ circuitId, calldata }) =>
+        makeRegistryBatchItemScVal(circuitId, calldata)
+      )
+    );
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(contract.call("verify_batch", batchScVal))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `verify_batch simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "verify_batch simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    const native = scValToNative(simResult.result.retval);
+    return Array.isArray(native) ? native.map(Boolean) : [];
   } catch (error) {
     if (error instanceof SorobanZkError) {
       throw error;

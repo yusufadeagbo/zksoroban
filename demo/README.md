@@ -103,3 +103,47 @@ Notes on the flow above:
 
 - All prompts use Node.js's built-in `readline` module — there are no new dependencies.
 - `Ctrl+C` during any prompt closes the interface and exits with status 0 (`Aborted.`).
+
+## Batch Verification
+
+`src/batchVerify.ts` is a non-interactive integration test for the SDK's
+`verifyBatchViaRegistry` — it batch-verifies 3 real, previously-generated
+proofs across 3 different circuit IDs (`range_proof`, `threshold_2of3`,
+`merkle_inclusion`) against `contracts/registry::verify_batch`, in a single
+call. It loads each circuit's `fixtures/{proof,public}.json` directly, so it
+needs no `circom` toolchain and no witness generation, unlike the main demo's
+`poseidon_preimage` flow.
+
+```bash
+npm run batch-verify
+```
+
+By default this targets the live Testnet registry
+(`CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH`), which today
+only has `poseidon_preimage` (circuit ID 1) registered — not the three
+circuits this batch asks about (IDs 2/3/4). Every result will correctly come
+back `false` in that case (the registry reporting "unknown circuit," not a
+bug), and the script prints a note explaining that rather than asserting
+success.
+
+To see real `true` results, register those three circuits' verifying keys
+(see [`docs/multi-circuit.md`](../docs/multi-circuit.md) and
+`sdk/src/proof.ts`'s `formatVerifyingKey`) with your own registry instance,
+then point the script at it — this also makes the script assert that every
+result comes back `true`, failing the run (non-zero exit) if any doesn't:
+
+```bash
+SOROBAN_TEST_REGISTRY_CONTRACT_ID=<your registry contract id> npm run batch-verify
+```
+
+If you registered the circuits under different IDs than this script's
+defaults (2/3/4, matching `contracts/registry/src/tests.rs`'s own scheme),
+override them individually:
+
+```bash
+SOROBAN_TEST_REGISTRY_CONTRACT_ID=<id> \
+SOROBAN_RANGE_PROOF_CIRCUIT_ID=<id> \
+SOROBAN_THRESHOLD_2OF3_CIRCUIT_ID=<id> \
+SOROBAN_MERKLE_INCLUSION_CIRCUIT_ID=<id> \
+npm run batch-verify
+```
