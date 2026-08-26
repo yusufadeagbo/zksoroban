@@ -103,3 +103,13 @@ Notes on the flow above:
 
 - All prompts use Node.js's built-in `readline` module — there are no new dependencies.
 - `Ctrl+C` during any prompt closes the interface and exits with status 0 (`Aborted.`).
+
+## Fee Estimation (optional, separate script)
+
+`src/estimateFee.ts` is a standalone script, not part of the interactive
+demo above — it demonstrates `estimateVerifyFee`/`verifyOnChain` against
+the older, single-circuit `contracts/verifier`, which (unlike the
+registry) requires a signed, fee-paying transaction. Run it with `npm run
+estimate-fee`. See
+[`docs/tutorial-first-proof.md`](../docs/tutorial-first-proof.md#optional-estimate-a-transaction-fee)
+for the full walkthrough, including funding a Testnet account.
