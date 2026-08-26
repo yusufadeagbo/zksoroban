@@ -389,6 +389,44 @@ fn call_count_ttl_is_refreshed_by_a_second_call_in_the_same_window() {
 }
 
 #[test]
+fn stale_instance_storage_call_count_entries_are_ignored() {
+    // Simulates exactly the scenario docs/architecture.md's migration note
+    // describes: a contract instance deployed before #178's fix has old
+    // CallCount(caller, window) entries sitting in instance() storage.
+    // Upgrading to this code doesn't rewrite existing storage, so that
+    // stale entry is still there — the migration note's claim is that the
+    // new code simply never reads or writes it again. This test is that
+    // claim, made concrete: a stale instance-storage entry already at the
+    // rate limit must not block a call the (correct) temporary-storage
+    // counter would otherwise allow.
+    let (env, _admin, client) = setup(1, 50);
+    let caller = Address::generate(&env);
+    let count_key = call_count_key(&env, &caller, 50);
+
+    env.as_contract(&client.address, || {
+        // max_calls is 1, so a stale count of 1 here would incorrectly
+        // block the caller's very next call if the contract still read
+        // this location.
+        env.storage().instance().set(&count_key, &1u32);
+    });
+
+    assert!(
+        call_valid(&env, &client, &caller),
+        "a stale instance-storage CallCount entry must not affect rate limiting"
+    );
+
+    env.as_contract(&client.address, || {
+        // The stale entry is untouched, not migrated or cleaned up —
+        // exactly as the migration note describes.
+        let stale: u32 = env.storage().instance().get(&count_key).unwrap();
+        assert_eq!(stale, 1);
+
+        let live: u32 = env.storage().temporary().get(&count_key).unwrap();
+        assert_eq!(live, 1);
+    });
+}
+
+#[test]
 fn separate_callers_have_independent_counters() {
     let (env, _admin, client) = setup(1, 100);
     let alice = Address::generate(&env);
