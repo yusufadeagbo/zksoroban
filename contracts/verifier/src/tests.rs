@@ -309,6 +309,39 @@ fn call_count_lives_in_temporary_storage_with_window_ttl() {
 }
 
 #[test]
+fn call_count_entry_is_evicted_once_its_ttl_expires() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32, vk));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % 50u32);
+    let count_key = DataKey::CallCount(caller, window_start);
+
+    env.as_contract(&contract_id, || {
+        assert!(env.storage().temporary().has(&count_key));
+    });
+
+    // This is the actual DoS-prevention property #178 fixes: once an
+    // entry's window is well behind the current ledger, the ledger
+    // evicts it on its own — nothing keeps it around, unlike the old
+    // instance-storage behavior this replaced.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 51;
+    });
+
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().temporary().has(&count_key));
+    });
+}
+
+#[test]
 fn separate_callers_have_independent_counters() {
     let (env, _admin, client) = setup(1, 100);
     let alice = Address::generate(&env);
