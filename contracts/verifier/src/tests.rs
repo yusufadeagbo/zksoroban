@@ -285,23 +285,22 @@ fn window_expiry_resets_counter() {
     assert!(call_valid(&env, &client, &caller));
 }
 
+fn call_count_key(env: &Env, caller: &Address, window_size: u32) -> DataKey {
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % window_size);
+    DataKey::CallCount(caller.clone(), window_start)
+}
+
 #[test]
 fn call_count_lives_in_temporary_storage_with_window_ttl() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32, vk));
-    let client = VerifierContractClient::new(&env, &contract_id);
+    let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
 
-    let ledger = env.ledger().sequence();
-    let window_start = ledger - (ledger % 50u32);
-    let count_key = DataKey::CallCount(caller, window_start);
+    let count_key = call_count_key(&env, &caller, 50);
 
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         assert!(!env.storage().instance().has(&count_key));
         assert!(env.storage().temporary().has(&count_key));
         assert!(env.storage().temporary().get_ttl(&count_key) >= 50u32);
@@ -310,21 +309,14 @@ fn call_count_lives_in_temporary_storage_with_window_ttl() {
 
 #[test]
 fn call_count_entry_is_evicted_once_its_ttl_expires() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32, vk));
-    let client = VerifierContractClient::new(&env, &contract_id);
+    let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
 
-    let ledger = env.ledger().sequence();
-    let window_start = ledger - (ledger % 50u32);
-    let count_key = DataKey::CallCount(caller, window_start);
+    let count_key = call_count_key(&env, &caller, 50);
 
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         assert!(env.storage().temporary().has(&count_key));
     });
 
@@ -336,9 +328,64 @@ fn call_count_entry_is_evicted_once_its_ttl_expires() {
         li.sequence_number += 51;
     });
 
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         assert!(!env.storage().temporary().has(&count_key));
     });
+}
+
+#[test]
+fn call_count_entry_survives_exactly_through_its_own_window() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let count_key = call_count_key(&env, &caller, 50);
+
+    // The acceptance criterion is a TTL covering "at least" the
+    // rate-limit window — so at ledger +50 (still inside the window
+    // the entry was extended to cover) the entry must not have been
+    // evicted early. Only +51, tested above, actually crosses it.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 50;
+    });
+
+    env.as_contract(&client.address, || {
+        assert!(
+            env.storage().temporary().has(&count_key),
+            "TTL must cover at least the full rate-limit window"
+        );
+    });
+}
+
+#[test]
+fn call_count_ttl_is_refreshed_by_a_second_call_in_the_same_window() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let count_key = call_count_key(&env, &caller, 50);
+    let ttl_after_first_call = env.as_contract(&client.address, || {
+        env.storage().temporary().get_ttl(&count_key)
+    });
+
+    // Burn a few ledgers within the same window, then call again — the
+    // second call's extend_ttl should push the TTL back out from the
+    // new, later ledger, not leave it decaying from the first call.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10;
+    });
+    assert!(call_valid(&env, &client, &caller));
+
+    let ttl_after_second_call = env.as_contract(&client.address, || {
+        env.storage().temporary().get_ttl(&count_key)
+    });
+
+    assert!(
+        ttl_after_second_call >= ttl_after_first_call,
+        "a second call in the same window must not shorten the entry's remaining TTL"
+    );
 }
 
 #[test]
