@@ -86,6 +86,17 @@ pub struct VerificationResult {
     pub inputs_hash: BytesN<32>,
 }
 
+/// One entry in a `verify_batch` call — the same fields `verify_proof` takes,
+/// minus `caller`, since a batch shares one caller across all its proofs.
+#[contracttype]
+#[derive(Clone)]
+pub struct ProofItem {
+    pub proof_a: Bytes,
+    pub proof_b: Bytes,
+    pub proof_c: Bytes,
+    pub public_inputs: Vec<BytesN<32>>,
+}
+
 #[contract]
 pub struct VerifierContract;
 
@@ -300,86 +311,143 @@ impl VerifierContract {
     ) -> Result<bool, Error> {
         caller.require_auth();
 
-        let allowlist_enabled: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllowlistEnabled)
-            .unwrap_or(false);
-        if allowlist_enabled {
-            let allowed: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::Allowlist(caller.clone()))
-                .unwrap_or(false);
-            if !allowed {
-                return Err(Error::CallerNotAllowed);
-            }
-        }
-
-        let limits: Limits = env
-            .storage()
-            .instance()
-            .get(&DataKey::Limits)
-            .ok_or(Error::NotInitialized)?;
-
-        let ledger = env.ledger().sequence();
-        let window_start = ledger - (ledger % limits.window_size);
-        let count_key = DataKey::CallCount(caller.clone(), window_start);
-        let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
-        let next = current + 1;
-        if next > limits.max_calls {
-            return Err(Error::RateLimitExceeded);
-        }
-        env.storage().temporary().set(&count_key, &next);
-        env.storage()
-            .temporary()
-            .extend_ttl(&count_key, limits.window_size, limits.window_size);
-
-        let proof_a = read_g1(&env, &proof_a, "proof_a");
-        let proof_b = read_g2(&env, &proof_b, "proof_b");
-        let proof_c = read_g1(&env, &proof_c, "proof_c");
-
-        if public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
-            publish_verification_result(&env, &caller, false, &public_inputs);
-            return Ok(false);
-        }
-
-        let expiry_ledger = match read_expiry_ledger(&public_inputs.get(1).unwrap()) {
-            Some(value) => value,
-            None => {
-                publish_verification_result(&env, &caller, false, &public_inputs);
-                return Ok(false);
-            }
+        let item = ProofItem {
+            proof_a,
+            proof_b,
+            proof_c,
+            public_inputs,
         };
+        let result = verify_one(&env, &caller, &item);
 
-        if ledger > expiry_ledger {
-            return Err(Error::ProofExpired);
+        // Same rule as before: only publish on an Ok(...) outcome. An Err(...)
+        // here rolls back the whole call (see the note on publish_verification_result),
+        // so publishing first would be a silent no-op.
+        if let Ok(success) = result {
+            publish_verification_result(&env, &caller, success, &item.public_inputs);
         }
 
-        let vk: VerifyingKey = env
+        result
+    }
+
+    /// Verify a batch of proofs from one caller in a single call. Each proof
+    /// is still subject to its own allowlist/rate-limit/expiry check, applied
+    /// in order — an earlier proof in the batch that consumes rate-limit
+    /// budget affects whether a later one in the *same* batch passes.
+    ///
+    /// Unlike `verify_proof`, a per-proof rejection (allowlist, rate limit,
+    /// expiry) does not fail the call — it becomes `false` in the returned
+    /// vec, and `verify_batch` keeps processing the rest of the batch. This
+    /// is deliberate: a batch's transaction never fails just because one
+    /// proof in it was invalid, and unlike a single `verify_proof` call,
+    /// there is no failed-transaction error code to fall back on to learn
+    /// *why* a given entry came back `false` — so every entry, rejected or
+    /// not, gets its own `verification_result` event.
+    ///
+    /// `Err(Error::NotInitialized)` is the one exception: that means the
+    /// contract itself isn't set up, not that any particular proof is bad,
+    /// so it aborts the whole batch (nothing in it could have succeeded).
+    pub fn verify_batch(
+        env: Env,
+        caller: Address,
+        proofs: Vec<ProofItem>,
+    ) -> Result<Vec<bool>, Error> {
+        caller.require_auth();
+
+        let mut results = Vec::new(&env);
+        for item in proofs.iter() {
+            let success = match verify_one(&env, &caller, &item) {
+                Ok(success) => success,
+                Err(Error::NotInitialized) => return Err(Error::NotInitialized),
+                Err(_) => false,
+            };
+            publish_verification_result(&env, &caller, success, &item.public_inputs);
+            results.push_back(success);
+        }
+
+        Ok(results)
+    }
+}
+
+/// The shared core of `verify_proof` and `verify_batch`: run every check for
+/// one proof (allowlist, rate limit, byte parsing, input count, expiry,
+/// pairing) and return its outcome. Does not publish an event itself —
+/// callers decide when and whether that's meaningful for their own outcome
+/// handling (see `verify_proof` and `verify_batch` above).
+fn verify_one(env: &Env, caller: &Address, item: &ProofItem) -> Result<bool, Error> {
+    let allowlist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::AllowlistEnabled)
+        .unwrap_or(false);
+    if allowlist_enabled {
+        let allowed: bool = env
             .storage()
             .instance()
-            .get(&DataKey::Vk)
-            .ok_or(Error::NotInitialized)?;
-
-        let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
-        let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
-        let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
-        let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
-        let vk_ic0 = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
-        let vk_ic1 = Bn254G1Affine::from_bytes(vk.ic.get(1).unwrap());
-
-        let public_input = Bn254Fr::from_bytes(public_inputs.get(0).unwrap());
-        let vk_x = vk_ic0 + (vk_ic1 * public_input);
-
-        let verified = env.crypto().bn254().pairing_check(
-            vec![&env, proof_a, -vk_alpha, -vk_x, -proof_c],
-            vec![&env, proof_b, vk_beta, vk_gamma, vk_delta],
-        );
-
-        publish_verification_result(&env, &caller, verified, &public_inputs);
-        Ok(verified)
+            .get(&DataKey::Allowlist(caller.clone()))
+            .unwrap_or(false);
+        if !allowed {
+            return Err(Error::CallerNotAllowed);
+        }
     }
+
+    let limits: Limits = env
+        .storage()
+        .instance()
+        .get(&DataKey::Limits)
+        .ok_or(Error::NotInitialized)?;
+
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % limits.window_size);
+    let count_key = DataKey::CallCount(caller.clone(), window_start);
+    let current: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
+    let next = current + 1;
+    if next > limits.max_calls {
+        return Err(Error::RateLimitExceeded);
+    }
+    env.storage().temporary().set(&count_key, &next);
+    env.storage()
+        .temporary()
+        .extend_ttl(&count_key, limits.window_size, limits.window_size);
+
+    let proof_a = read_g1(env, &item.proof_a, "proof_a");
+    let proof_b = read_g2(env, &item.proof_b, "proof_b");
+    let proof_c = read_g1(env, &item.proof_c, "proof_c");
+
+    if item.public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
+        return Ok(false);
+    }
+
+    let expiry_ledger = match read_expiry_ledger(&item.public_inputs.get(1).unwrap()) {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+
+    if ledger > expiry_ledger {
+        return Err(Error::ProofExpired);
+    }
+
+    let vk: VerifyingKey = env
+        .storage()
+        .instance()
+        .get(&DataKey::Vk)
+        .ok_or(Error::NotInitialized)?;
+
+    let vk_alpha = Bn254G1Affine::from_bytes(vk.alpha);
+    let vk_beta = Bn254G2Affine::from_bytes(vk.beta);
+    let vk_gamma = Bn254G2Affine::from_bytes(vk.gamma);
+    let vk_delta = Bn254G2Affine::from_bytes(vk.delta);
+    let vk_ic0 = Bn254G1Affine::from_bytes(vk.ic.get(0).unwrap());
+    let vk_ic1 = Bn254G1Affine::from_bytes(vk.ic.get(1).unwrap());
+
+    let public_input = Bn254Fr::from_bytes(item.public_inputs.get(0).unwrap());
+    let vk_x = vk_ic0 + (vk_ic1 * public_input);
+
+    let verified = env.crypto().bn254().pairing_check(
+        vec![env, proof_a, -vk_alpha, -vk_x, -proof_c],
+        vec![env, proof_b, vk_beta, vk_gamma, vk_delta],
+    );
+
+    Ok(verified)
 }
 
 /// Publish the `verification_result` event for an outcome that returns via

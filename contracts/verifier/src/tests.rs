@@ -920,3 +920,143 @@ fn upgrade_rejects_non_admin_caller() {
 
     assert!(result.is_err());
 }
+
+// Batch verification (#13).
+
+fn valid_batch_item(env: &Env) -> ProofItem {
+    ProofItem {
+        proof_a: Bytes::from_array(env, &VALID_PROOF_A),
+        proof_b: Bytes::from_array(env, &VALID_PROOF_B),
+        proof_c: Bytes::from_array(env, &VALID_PROOF_C),
+        public_inputs: public_inputs_with_expiry(env, u32::MAX),
+    }
+}
+
+#[test]
+fn verify_batch_returns_results_in_order() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
+
+    let valid = valid_batch_item(&env);
+    let tampered_item = ProofItem {
+        proof_a: Bytes::from_array(&env, &tampered),
+        ..valid.clone()
+    };
+
+    let results = client.verify_batch(
+        &caller,
+        &vec![&env, valid.clone(), tampered_item, valid],
+    );
+
+    assert_eq!(results, vec![&env, true, false, true]);
+}
+
+#[test]
+fn verify_batch_applies_rate_limit_within_batch() {
+    let (env, _admin, client) = setup(2, 100);
+    let caller = Address::generate(&env);
+    let item = valid_batch_item(&env);
+
+    let results = client.verify_batch(&caller, &vec![&env, item.clone(), item.clone(), item]);
+
+    assert_eq!(results, vec![&env, true, true, false]);
+}
+
+#[test]
+fn verify_batch_applies_allowlist_per_proof() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    client.set_allowlist_mode(&true);
+    let item = valid_batch_item(&env);
+
+    let results = client.verify_batch(&caller, &vec![&env, item.clone(), item]);
+
+    assert_eq!(results, vec![&env, false, false]);
+}
+
+#[test]
+fn verify_batch_emits_one_event_per_item_in_order() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
+
+    let valid = valid_batch_item(&env);
+    let tampered_item = ProofItem {
+        proof_a: Bytes::from_array(&env, &tampered),
+        ..valid.clone()
+    };
+
+    let results = client.verify_batch(&caller, &vec![&env, valid.clone(), tampered_item]);
+    assert_eq!(results, vec![&env, true, false]);
+
+    let expected_success = VerificationResult {
+        success: true,
+        caller: caller.clone(),
+        inputs_hash: expected_inputs_hash(&env, &valid.public_inputs),
+    };
+    let expected_failure = VerificationResult {
+        success: false,
+        caller: caller.clone(),
+        inputs_hash: expected_inputs_hash(&env, &valid.public_inputs),
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                expected_success.topics(&env),
+                expected_success.data(&env),
+            ),
+            (
+                client.address.clone(),
+                expected_failure.topics(&env),
+                expected_failure.data(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn verify_batch_emits_event_even_on_err_rejection() {
+    // Unlike a single verify_proof call, a per-item Err(...) rejection
+    // inside a batch does NOT roll back the batch call itself — verify_batch
+    // never returns Err for a per-item reason — so its event survives here,
+    // unlike verify_proof_emits_no_event_on_err_rejection above.
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    client.set_allowlist_mode(&true);
+    let item = valid_batch_item(&env);
+
+    let results = client.verify_batch(&caller, &vec![&env, item.clone()]);
+    assert_eq!(results, vec![&env, false]);
+
+    assert_single_verification_event(&env, &client.address, &caller, false, &item.public_inputs);
+}
+
+#[test]
+fn verify_batch_empty_returns_empty() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    let results = client.verify_batch(&caller, &Vec::new(&env));
+    assert!(results.is_empty());
+}
+
+#[test]
+#[should_panic]
+fn verify_batch_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let caller = Address::generate(&env);
+
+    client.verify_batch(&caller, &Vec::new(&env));
+}
