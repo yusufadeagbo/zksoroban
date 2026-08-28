@@ -285,26 +285,181 @@ fn window_expiry_resets_counter() {
     assert!(call_valid(&env, &client, &caller));
 }
 
+fn call_count_key(env: &Env, caller: &Address, window_size: u32) -> DataKey {
+    let ledger = env.ledger().sequence();
+    let window_start = ledger - (ledger % window_size);
+    DataKey::CallCount(caller.clone(), window_start)
+}
+
 #[test]
 fn call_count_lives_in_temporary_storage_with_window_ttl() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 50u32, vk));
-    let client = VerifierContractClient::new(&env, &contract_id);
+    let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
 
-    let ledger = env.ledger().sequence();
-    let window_start = ledger - (ledger % 50u32);
-    let count_key = DataKey::CallCount(caller, window_start);
+    let count_key = call_count_key(&env, &caller, 50);
 
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         assert!(!env.storage().instance().has(&count_key));
         assert!(env.storage().temporary().has(&count_key));
         assert!(env.storage().temporary().get_ttl(&count_key) >= 50u32);
+    });
+}
+
+#[test]
+fn call_count_entry_is_evicted_once_its_ttl_expires() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let count_key = call_count_key(&env, &caller, 50);
+
+    env.as_contract(&client.address, || {
+        assert!(env.storage().temporary().has(&count_key));
+    });
+
+    // This is the actual DoS-prevention property #178 fixes: once an
+    // entry's window is well behind the current ledger, the ledger
+    // evicts it on its own — nothing keeps it around, unlike the old
+    // instance-storage behavior this replaced.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 51;
+    });
+
+    env.as_contract(&client.address, || {
+        assert!(!env.storage().temporary().has(&count_key));
+    });
+}
+
+#[test]
+fn call_count_entry_survives_exactly_through_its_own_window() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let count_key = call_count_key(&env, &caller, 50);
+
+    // The acceptance criterion is a TTL covering "at least" the
+    // rate-limit window — so at ledger +50 (still inside the window
+    // the entry was extended to cover) the entry must not have been
+    // evicted early. Only +51, tested above, actually crosses it.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 50;
+    });
+
+    env.as_contract(&client.address, || {
+        assert!(
+            env.storage().temporary().has(&count_key),
+            "TTL must cover at least the full rate-limit window"
+        );
+    });
+}
+
+#[test]
+fn call_count_ttl_is_refreshed_by_a_second_call_in_the_same_window() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let count_key = call_count_key(&env, &caller, 50);
+    let ttl_after_first_call = env.as_contract(&client.address, || {
+        env.storage().temporary().get_ttl(&count_key)
+    });
+
+    // Burn a few ledgers within the same window, then call again — the
+    // second call's extend_ttl should push the TTL back out from the
+    // new, later ledger, not leave it decaying from the first call.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 10;
+    });
+    assert!(call_valid(&env, &client, &caller));
+
+    let ttl_after_second_call = env.as_contract(&client.address, || {
+        env.storage().temporary().get_ttl(&count_key)
+    });
+
+    assert!(
+        ttl_after_second_call >= ttl_after_first_call,
+        "a second call in the same window must not shorten the entry's remaining TTL"
+    );
+}
+
+#[test]
+fn stale_instance_storage_call_count_entries_are_ignored() {
+    // Simulates exactly the scenario docs/architecture.md's migration note
+    // describes: a contract instance deployed before #178's fix has old
+    // CallCount(caller, window) entries sitting in instance() storage.
+    // Upgrading to this code doesn't rewrite existing storage, so that
+    // stale entry is still there — the migration note's claim is that the
+    // new code simply never reads or writes it again. This test is that
+    // claim, made concrete: a stale instance-storage entry already at the
+    // rate limit must not block a call the (correct) temporary-storage
+    // counter would otherwise allow.
+    let (env, _admin, client) = setup(1, 50);
+    let caller = Address::generate(&env);
+    let count_key = call_count_key(&env, &caller, 50);
+
+    env.as_contract(&client.address, || {
+        // max_calls is 1, so a stale count of 1 here would incorrectly
+        // block the caller's very next call if the contract still read
+        // this location.
+        env.storage().instance().set(&count_key, &1u32);
+    });
+
+    assert!(
+        call_valid(&env, &client, &caller),
+        "a stale instance-storage CallCount entry must not affect rate limiting"
+    );
+
+    env.as_contract(&client.address, || {
+        // The stale entry is untouched, not migrated or cleaned up —
+        // exactly as the migration note describes.
+        let stale: u32 = env.storage().instance().get(&count_key).unwrap();
+        assert_eq!(stale, 1);
+
+        let live: u32 = env.storage().temporary().get(&count_key).unwrap();
+        assert_eq!(live, 1);
+    });
+}
+
+#[test]
+fn call_count_storage_does_not_grow_unbounded_across_many_callers_and_windows() {
+    // This is #178's actual scenario, at scale: under the old code, every
+    // one of these (caller, window) pairs would be a permanent instance-
+    // storage entry, making every future call to the contract — from
+    // anyone — a little more expensive forever. Under the fix, none of
+    // them ever touch instance storage at all.
+    const CALLERS: u32 = 20;
+    const WINDOWS: u32 = 5;
+    const WINDOW_SIZE: u32 = 10;
+
+    let (env, _admin, client) = setup(1000, WINDOW_SIZE);
+    let mut keys = std::vec::Vec::new();
+
+    for w in 0..WINDOWS {
+        env.ledger().with_mut(|li| {
+            li.sequence_number = w * WINDOW_SIZE;
+        });
+
+        for _ in 0..CALLERS {
+            let caller = Address::generate(&env);
+            assert!(call_valid(&env, &client, &caller));
+            keys.push(call_count_key(&env, &caller, WINDOW_SIZE));
+        }
+    }
+
+    assert_eq!(keys.len(), (CALLERS * WINDOWS) as usize);
+    env.as_contract(&client.address, || {
+        for key in &keys {
+            assert!(
+                !env.storage().instance().has(key),
+                "a CallCount entry leaked into instance storage"
+            );
+        }
     });
 }
 
