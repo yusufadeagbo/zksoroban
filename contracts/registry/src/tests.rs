@@ -906,3 +906,139 @@ fn upgrade_rejects_non_admin_caller() {
         }])
         .upgrade(&wasm_hash);
 }
+
+// Batch verification (#13).
+
+#[test]
+fn verify_batch_returns_results_in_order_across_circuits() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+    client.register_circuit(&RANGE_PROOF_CIRCUIT_ID, &range_proof_vk(&env));
+    client.register_circuit(&THRESHOLD_2OF3_CIRCUIT_ID, &threshold_2of3_vk(&env));
+
+    let tampered_range_proof_a =
+        (-Bn254G1Affine::from_array(&env, &RANGE_PROOF_PROOF_A)).to_array();
+
+    let batch = vec![
+        &env,
+        BatchItem {
+            id: POSEIDON_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+            proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+            proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+            public_inputs: valid_public_inputs(&env),
+        },
+        BatchItem {
+            id: RANGE_PROOF_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &tampered_range_proof_a),
+            proof_b: Bytes::from_array(&env, &RANGE_PROOF_PROOF_B),
+            proof_c: Bytes::from_array(&env, &RANGE_PROOF_PROOF_C),
+            public_inputs: range_proof_public_inputs(&env),
+        },
+        BatchItem {
+            id: THRESHOLD_2OF3_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &THRESHOLD_2OF3_PROOF_A),
+            proof_b: Bytes::from_array(&env, &THRESHOLD_2OF3_PROOF_B),
+            proof_c: Bytes::from_array(&env, &THRESHOLD_2OF3_PROOF_C),
+            public_inputs: threshold_2of3_public_inputs(&env),
+        },
+    ];
+
+    let results = client.verify_batch(&batch);
+
+    assert_eq!(results, vec![&env, true, false, true]);
+}
+
+#[test]
+fn verify_batch_treats_unknown_circuit_as_false_not_panic() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+
+    let batch = vec![
+        &env,
+        BatchItem {
+            id: UNKNOWN_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+            proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+            proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+            public_inputs: valid_public_inputs(&env),
+        },
+        BatchItem {
+            id: POSEIDON_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+            proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+            proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+            public_inputs: valid_public_inputs(&env),
+        },
+    ];
+
+    let results = client.verify_batch(&batch);
+
+    assert_eq!(results, vec![&env, false, true]);
+}
+
+#[test]
+fn verify_batch_emits_one_event_per_item_in_order() {
+    let (env, _admin, client) = setup();
+    env.mock_all_auths();
+    client.register_circuit(&POSEIDON_CIRCUIT_ID, &poseidon_vk(&env));
+
+    let public_inputs = valid_public_inputs(&env);
+    let batch = vec![
+        &env,
+        BatchItem {
+            id: UNKNOWN_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+            proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+            proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+            public_inputs: public_inputs.clone(),
+        },
+        BatchItem {
+            id: POSEIDON_CIRCUIT_ID,
+            proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+            proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+            proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+            public_inputs: public_inputs.clone(),
+        },
+    ];
+
+    let results = client.verify_batch(&batch);
+    assert_eq!(results, vec![&env, false, true]);
+
+    let expected_false = VerificationResult {
+        success: false,
+        inputs_hash: expected_inputs_hash(&env, &public_inputs),
+    };
+    let expected_true = VerificationResult {
+        success: true,
+        inputs_hash: expected_inputs_hash(&env, &public_inputs),
+    };
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                expected_false.topics(&env),
+                expected_false.data(&env),
+            ),
+            (
+                client.address.clone(),
+                expected_true.topics(&env),
+                expected_true.data(&env),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn verify_batch_empty_returns_empty() {
+    let (env, _admin, client) = setup();
+
+    let results = client.verify_batch(&Vec::new(&env));
+    assert!(results.is_empty());
+}

@@ -80,6 +80,71 @@ export interface VerifyViaRegistryOptions {
   bundle?: ProofBundle;
 }
 
+/**
+ * One proof in a {@link verifyBatchOnChain} call, targeting
+ * `contracts/verifier`'s `verify_batch`. Same shape as a single
+ * {@link VerifyOptions}'s proof inputs, minus the fields that are shared
+ * across the whole batch (`rpcUrl`, `contractId`, `keypair`).
+ */
+export interface VerifierBatchItem {
+  proof: SnarkjsProof;
+  publicSignals: string[];
+  expiryLedger?: number;
+}
+
+/**
+ * Options accepted by {@link verifyBatchOnChain}.
+ *
+ * Like {@link VerifyOptions}, this targets `contracts/verifier`, which
+ * requires the caller's own Soroban auth and mutates rate-limit state — so a
+ * `keypair` is required and this submits a real transaction. All items in
+ * `items` are verified in one transaction under that single `keypair`'s
+ * identity, and are each still subject to their own allowlist/rate-limit/
+ * expiry check.
+ */
+export interface VerifyBatchOptions {
+  rpcUrl: string;
+  contractId: string;
+  keypair: Keypair;
+  items: VerifierBatchItem[];
+}
+
+/**
+ * Result of a {@link verifyBatchOnChain} call — `verified[i]` corresponds to
+ * `items[i]` from the request, in order.
+ */
+export interface VerifyBatchResult {
+  verified: boolean[];
+  txHash: string;
+  ledger: number;
+  fee: string;
+}
+
+/**
+ * One (circuit, proof) pair in a {@link verifyBatchViaRegistry} call,
+ * targeting `contracts/registry`'s `verify_batch`.
+ */
+export interface RegistryBatchItem {
+  /** The `id` a circuit was registered under via `register_circuit`. */
+  circuitId: number;
+  proof: SnarkjsProof;
+  publicSignals: string[];
+}
+
+/**
+ * Options accepted by {@link verifyBatchViaRegistry}.
+ *
+ * Like {@link VerifyViaRegistryOptions}, no `keypair` is needed: the
+ * registry's `verify_batch` requires no auth and mutates no storage, so this
+ * call is simulation-only.
+ */
+export interface VerifyBatchViaRegistryOptions {
+  rpcUrl: string;
+  /** Bech32m address of the deployed `contracts/registry` instance. */
+  registryContractId: string;
+  items: RegistryBatchItem[];
+}
+
 export enum SorobanZkErrorCode {
   INVALID_PROOF_FORMAT = "INVALID_PROOF_FORMAT",
   INVALID_PUBLIC_INPUT = "INVALID_PUBLIC_INPUT",

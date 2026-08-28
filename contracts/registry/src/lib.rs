@@ -35,6 +35,20 @@ pub struct VerificationResult {
     pub inputs_hash: BytesN<32>,
 }
 
+/// One entry in a `verify_batch` call — a circuit ID plus the same fields
+/// `verify_proof(id, ...)` takes. Batching across different circuit IDs in
+/// one call is the main value of batching on the registry, since it's the
+/// multi-circuit contract.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchItem {
+    pub id: u32,
+    pub proof_a: Bytes,
+    pub proof_b: Bytes,
+    pub proof_c: Bytes,
+    pub public_inputs: Vec<BytesN<32>>,
+}
+
 #[contract]
 pub struct RegistryContract;
 
@@ -132,6 +146,35 @@ impl RegistryContract {
         .publish(&env);
 
         success
+    }
+
+    /// Verify a batch of (circuit_id, proof) pairs in a single call, in
+    /// order. Each entry is independent — a bad or unknown-circuit entry
+    /// just becomes `false` in the returned vec and doesn't affect the
+    /// others. One `verification_result` event is published per entry.
+    pub fn verify_batch(env: Env, batch: Vec<BatchItem>) -> Vec<bool> {
+        let mut results = Vec::new(&env);
+        for item in batch.iter() {
+            let inputs_hash = compute_inputs_hash(&env, &item.public_inputs);
+            let success = run_verification(
+                &env,
+                item.id,
+                &item.proof_a,
+                &item.proof_b,
+                &item.proof_c,
+                &item.public_inputs,
+            );
+
+            VerificationResult {
+                success,
+                inputs_hash,
+            }
+            .publish(&env);
+
+            results.push_back(success);
+        }
+
+        results
     }
 }
 
