@@ -61,6 +61,7 @@ enum DataKey {
     CallCount(Address, u32),
     AllowlistEnabled,
     Allowlist(Address),
+    VerificationCount(BytesN<32>),
 }
 
 #[contracterror]
@@ -125,6 +126,23 @@ impl VerifierContract {
 
     pub fn version(env: Env) -> String {
         String::from_str(&env, CONTRACT_VERSION)
+    }
+
+    /// Number of times `verify_proof`/`verify_batch` has been attempted for
+    /// `commitment` — the sha256 hash of the concatenated public inputs,
+    /// i.e. the same value published as `inputs_hash` in
+    /// `VerificationResult`. Intended for off-chain analytics and abuse
+    /// detection (e.g. flagging a commitment resubmitted far more often
+    /// than legitimate usage would produce).
+    ///
+    /// Returns 0 both for a commitment that has never been submitted and
+    /// for one whose entry has since expired — see
+    /// `record_verification_attempt` for why entries expire.
+    pub fn verification_count(env: Env, commitment: BytesN<32>) -> u32 {
+        env.storage()
+            .temporary()
+            .get(&DataKey::VerificationCount(commitment))
+            .unwrap_or(0)
     }
 
     pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
@@ -396,6 +414,9 @@ fn verify_one(env: &Env, caller: &Address, item: &ProofItem) -> Result<bool, Err
         .get(&DataKey::Limits)
         .ok_or(Error::NotInitialized)?;
 
+    let commitment = compute_inputs_hash(env, &item.public_inputs);
+    record_verification_attempt(env, &commitment, limits.window_size);
+
     let ledger = env.ledger().sequence();
     let window_start = ledger - (ledger % limits.window_size);
     let count_key = DataKey::CallCount(caller.clone(), window_start);
@@ -469,6 +490,30 @@ fn publish_verification_result(
         inputs_hash: compute_inputs_hash(env, public_inputs),
     }
     .publish(env);
+}
+
+/// Track how many times a verification has been attempted for a given
+/// public-input commitment, for off-chain analytics and abuse detection
+/// (see `VerifierContract::verification_count`).
+///
+/// This deliberately mirrors the `CallCount` fix from finding #6 in
+/// `docs/security.md`: `commitment` is derived entirely from
+/// caller-supplied `public_inputs`, so an attacker can mint an unbounded
+/// number of distinct commitments. Storing counts in `instance()` or
+/// unbounded `persistent()` storage would reintroduce exactly the
+/// unbounded-storage-growth DoS that fix closed. Living in `temporary()`
+/// storage with `extend_ttl` refreshed on every hit means a commitment
+/// that is not resubmitted is naturally evicted once its window elapses,
+/// while one under active (ab)use keeps extending its own TTL and
+/// survives for as long as it keeps being submitted.
+fn record_verification_attempt(env: &Env, commitment: &BytesN<32>, window_size: u32) {
+    let key = DataKey::VerificationCount(commitment.clone());
+    let current: u32 = env.storage().temporary().get(&key).unwrap_or(0);
+    let next = current + 1;
+    env.storage().temporary().set(&key, &next);
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, window_size, window_size);
 }
 
 fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {

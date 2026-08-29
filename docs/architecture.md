@@ -169,6 +169,24 @@ an older deployment already wrote under `instance()` stay there,
 unread and unused by the new code, until that instance is redeployed
 from scratch.
 
+### Verification-Count Storage
+
+`VerificationCount(BytesN<32>)` tracks how many times `verify_proof`/
+`verify_batch` has been attempted for a given public-input commitment
+(the same sha256 hash published as `inputs_hash` in
+`VerificationResult`), for off-chain analytics and abuse detection —
+queryable via `verification_count`.
+
+This uses the exact same `env.storage().temporary()` plus
+`extend_ttl`-on-every-write pattern as `CallCount`, for the same
+reason: the commitment is derived entirely from caller-supplied public
+inputs, so an attacker could otherwise mint an unbounded number of
+distinct commitments and grow storage forever (see
+[`docs/security.md`](security.md) finding #6). A commitment that stops
+being submitted is evicted by the ledger once its window elapses; one
+under active (ab)use keeps refreshing its own TTL and survives for as
+long as it keeps being submitted.
+
 ## Events
 
 Both `contracts/verifier::verify_proof` and `contracts/registry::verify_proof`
