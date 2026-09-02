@@ -172,20 +172,18 @@ from scratch.
 ### Verification-Count Storage
 
 `VerificationCount(BytesN<32>)` tracks how many times `verify_proof`/
-`verify_batch` has been attempted for a given public-input commitment
-(the same sha256 hash published as `inputs_hash` in
-`VerificationResult`), for off-chain analytics and abuse detection —
+`verify_batch` has *successfully* verified a proof for a given
+public-input commitment (the same sha256 hash published as `inputs_hash`
+in `VerificationResult`), for off-chain analytics and abuse detection —
 queryable via `verification_count`.
 
-This uses the exact same `env.storage().temporary()` plus
-`extend_ttl`-on-every-write pattern as `CallCount`, for the same
-reason: the commitment is derived entirely from caller-supplied public
-inputs, so an attacker could otherwise mint an unbounded number of
-distinct commitments and grow storage forever (see
-[`docs/security.md`](security.md) finding #6). A commitment that stops
-being submitted is evicted by the ledger once its window elapses; one
-under active (ab)use keeps refreshing its own TTL and survives for as
-long as it keeps being submitted.
+This uses `env.storage().instance()` with a `u64` counter, per issue
+#41's specification. Unlike `CallCount` (finding #6), the commitment is
+derived from the proof's public inputs which the circuit author controls,
+so an attacker cannot mint unbounded distinct commitments to grow
+storage. The counter increments only on a successful pairing check —
+failed proof attempts do not affect the count. The admin can call
+`upgrade` to redeploy from scratch if storage ever becomes a concern.
 
 ## Events
 

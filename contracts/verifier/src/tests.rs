@@ -1,7 +1,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::storage::Temporary as _;
+use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, String, Vec};
 
@@ -285,17 +285,12 @@ fn window_expiry_resets_counter() {
     assert!(call_valid(&env, &client, &caller));
 }
 
-fn verification_count_key(env: &Env) -> DataKey {
-    let commitment = compute_inputs_hash(env, &public_inputs_with_expiry(env, u32::MAX));
-    DataKey::VerificationCount(commitment)
-}
-
 #[test]
 fn verification_count_starts_at_zero_for_an_unseen_commitment() {
     let (env, _admin, client) = setup(10, 100);
     let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
 
-    assert_eq!(client.verification_count(&commitment), 0);
+    assert_eq!(client.verification_count(&commitment), 0u64);
 }
 
 #[test]
@@ -305,10 +300,10 @@ fn verify_proof_increments_the_verification_count_for_its_commitment() {
     let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
 
     assert!(call_valid(&env, &client, &caller));
-    assert_eq!(client.verification_count(&commitment), 1);
+    assert_eq!(client.verification_count(&commitment), 1u64);
 
     assert!(call_valid(&env, &client, &caller));
-    assert_eq!(client.verification_count(&commitment), 2);
+    assert_eq!(client.verification_count(&commitment), 2u64);
 }
 
 #[test]
@@ -321,7 +316,7 @@ fn verification_count_is_shared_across_different_callers_submitting_the_same_com
     assert!(call_valid(&env, &client, &caller_a));
     assert!(call_valid(&env, &client, &caller_b));
 
-    assert_eq!(client.verification_count(&commitment), 2);
+    assert_eq!(client.verification_count(&commitment), 2u64);
 }
 
 #[test]
@@ -336,15 +331,12 @@ fn verification_count_does_not_leak_across_distinct_commitments() {
     let commitment_1000 = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, 1000));
     let commitment_2000 = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, 2000));
 
-    assert_eq!(client.verification_count(&commitment_1000), 1);
-    assert_eq!(client.verification_count(&commitment_2000), 1);
+    assert_eq!(client.verification_count(&commitment_1000), 1u64);
+    assert_eq!(client.verification_count(&commitment_2000), 1u64);
 }
 
 #[test]
-fn verification_count_increments_on_a_failed_verification_too() {
-    // Abuse detection cares about resubmission of a commitment regardless
-    // of whether the proof itself was valid — a wrong/tampered proof
-    // resubmitted against the same public inputs should still show up.
+fn verification_count_does_not_increment_on_a_failed_verification() {
     let (env, _admin, client) = setup(10, 100);
     let caller = Address::generate(&env);
     let tampered = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
@@ -359,7 +351,7 @@ fn verification_count_increments_on_a_failed_verification_too() {
     assert!(!result);
 
     let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
-    assert_eq!(client.verification_count(&commitment), 1);
+    assert_eq!(client.verification_count(&commitment), 0u64);
 }
 
 #[test]
@@ -378,80 +370,56 @@ fn verify_batch_increments_the_verification_count_for_each_item() {
     client.verify_batch(&caller, &vec![&env, item.clone(), item.clone()]);
 
     let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, 1000));
-    assert_eq!(client.verification_count(&commitment), 2);
+    assert_eq!(client.verification_count(&commitment), 2u64);
 }
 
 #[test]
-fn verification_count_lives_in_temporary_storage_with_window_ttl() {
+fn verification_count_lives_in_instance_storage() {
     let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
-
-    let count_key = verification_count_key(&env);
-
-    env.as_contract(&client.address, || {
-        assert!(!env.storage().instance().has(&count_key));
-        assert!(!env.storage().persistent().has(&count_key));
-        assert!(env.storage().temporary().has(&count_key));
-        assert!(env.storage().temporary().get_ttl(&count_key) >= 50u32);
-    });
-}
-
-#[test]
-fn verification_count_entry_is_evicted_once_its_ttl_expires() {
-    let (env, _admin, client) = setup(10, 50);
-    let caller = Address::generate(&env);
-
-    assert!(call_valid(&env, &client, &caller));
-
-    let count_key = verification_count_key(&env);
-
-    env.as_contract(&client.address, || {
-        assert!(env.storage().temporary().has(&count_key));
-    });
-
-    // Same DoS-prevention property as CallCount (#178): a commitment that
-    // stops being submitted is evicted by the ledger on its own instead of
-    // accumulating forever, since public inputs are attacker-controlled
-    // and an attacker could otherwise mint unbounded distinct commitments.
-    env.ledger().with_mut(|li| {
-        li.sequence_number += 51;
-    });
-
-    env.as_contract(&client.address, || {
-        assert!(!env.storage().temporary().has(&count_key));
-    });
 
     let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
-    assert_eq!(client.verification_count(&commitment), 0);
+    let count_key = DataKey::VerificationCount(commitment);
+
+    env.as_contract(&client.address, || {
+        assert!(env.storage().instance().has(&count_key));
+        assert!(!env.storage().temporary().has(&count_key));
+    });
 }
 
 #[test]
-fn verification_count_ttl_is_refreshed_by_a_second_call_in_the_same_window() {
+fn verification_count_persists_across_ledger_advances() {
     let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
 
     assert!(call_valid(&env, &client, &caller));
 
-    let count_key = verification_count_key(&env);
-    let ttl_after_first_call = env.as_contract(&client.address, || {
-        env.storage().temporary().get_ttl(&count_key)
+    let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 100;
     });
+
+    assert_eq!(client.verification_count(&commitment), 1u64);
+}
+
+#[test]
+fn verification_count_is_not_refreshed_by_a_second_call() {
+    let (env, _admin, client) = setup(10, 50);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let commitment = compute_inputs_hash(&env, &public_inputs_with_expiry(&env, u32::MAX));
 
     env.ledger().with_mut(|li| {
         li.sequence_number += 10;
     });
     assert!(call_valid(&env, &client, &caller));
 
-    let ttl_after_second_call = env.as_contract(&client.address, || {
-        env.storage().temporary().get_ttl(&count_key)
-    });
-
-    assert!(
-        ttl_after_second_call >= ttl_after_first_call,
-        "a second call in the same window must not shorten the entry's remaining TTL"
-    );
+    assert_eq!(client.verification_count(&commitment), 2u64);
 }
 
 fn call_count_key(env: &Env, caller: &Address, window_size: u32) -> DataKey {
