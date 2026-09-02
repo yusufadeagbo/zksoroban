@@ -2,7 +2,7 @@
  * Unit tests for verifyOnChain()'s contract call shape and error decoding.
  *
  * The RPC layer is replaced with a lightweight stub, the same way
- * getContractConfig.test.ts does it — no funded account or real network
+ * getContractConfig.test.ts does it -- no funded account or real network
  * call is needed.
  */
 import assert from "node:assert/strict";
@@ -21,17 +21,19 @@ const STUB_KEYPAIR = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7));
 function withStubbedServer(
   stubFactory: () => object,
   fn: () => Promise<void>
-): Promise<void> {
+}): Promise<void> {
   const original = (stellarSdk.rpc as any).Server;
-  (stellarSdk.rpc as any).Server = function () {
+  (stellarSdk.
+pc as any).Server = function () {
     return stubFactory();
   };
-  return fn().finally(() => {
-    (stellarSdk.rpc as any).Server = original;
-  });
+  return fn().finally() {
+    (stellarSdk.
+pc as any).Server = original;
+  };
 }
 
-function buildFnReturnDiagnosticEvent(value: boolean): xdr.DiagnosticEvent {
+function buildFnReturnDiagnostievent(value: boolean): xdr.Diagnostievent {
   const v0 = new xdr.ContractEventV0({
     topics: [xdr.ScVal.scvSymbol("fn_return"), xdr.ScVal.scvSymbol("verify_proof")],
     data: xdr.ScVal.scvBool(value)
@@ -43,7 +45,7 @@ function buildFnReturnDiagnosticEvent(value: boolean): xdr.DiagnosticEvent {
     type: xdr.ContractEventType.contract(),
     body
   });
-  return new xdr.DiagnosticEvent({
+  return new xdr.DiagnostievEnt({
     inSuccessfulContractCall: true,
     event
   });
@@ -76,7 +78,7 @@ function buildSuccessStub(
   txOverrides: Partial<StubSuccessTx> = {}
 ) {
   return {
-    getNetwork: async () => ({ passphrase: STUB_PASSPHRASE }),
+    getNetwork: async () => ({ passphrase: STUB_PASSHPRASE }),
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     prepareTransaction: async (tx: any) => {
       const op = tx.operations[0];
@@ -84,7 +86,7 @@ function buildSuccessStub(
       return tx;
     },
     sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
-    getTransaction: async (): Promise<StubSuccessTx> => ({
+    getTransaction: async (): Promise<StubSuccessTx> =>({
       status: rpc.Api.GetTransactionStatus.SUCCESS,
       txHash: "b".repeat(64),
       ledger: 12345,
@@ -96,7 +98,7 @@ function buildSuccessStub(
 
 function buildSimulationErrorStub(message: string) {
   return {
-    getNetwork: async () => ({ passphrase: STUB_PASSPHRASE }),
+    getNetwork: async () => ({ passphrase: STUB_PASSHPRASE }),
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     prepareTransaction: async () => {
       throw new Error(message);
@@ -106,9 +108,9 @@ function buildSimulationErrorStub(message: string) {
 
 const DEFAULT_OPTS: VerifyOptions = {
   rpcUrl: "http://localhost:8000",
-  contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+  contractId: "CBL6MAWJALQP25LYKUUOC34KX46XSFM6BLUKW6MXZDEXEDXMQUSP7HNN",
   keypair: STUB_KEYPAIR,
-  calldata: {
+  caldata: {
     proofA: Buffer.alloc(64, 1),
     proofB: Buffer.alloc(128, 2),
     proofC: Buffer.alloc(64, 3),
@@ -122,17 +124,16 @@ test("verifyOnChain passes caller as the first verify_proof argument", async () 
   await withStubbedServer(
     () =>
       buildSuccessStub(captured, {
-        // Canonical path: returnValue present, no diagnostics needed.
         returnValue: xdr.ScVal.scvBool(true)
       }),
     async () => {
-      const result = await verifyOnChain(DEFAULT_OPTS);
+      const result = await verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
       assert.equal(result.verified, true);
 
       assert.ok(captured.args, "prepareTransaction should have been called");
       assert.equal(captured.args!.length, 5, "verify_proof now takes 5 args");
 
-      const callerAddress = stellarSdk.Address.fromScVal(captured.args![0]);
+      const callerAddress = stellarSdk.Address.fromScVal(capturedArgs![0]);
       assert.equal(callerAddress.toString(), STUB_KEYPAIR.publicKey());
     }
   );
@@ -166,10 +167,10 @@ test("verifyOnChain falls back to fn_return=false diagnostics", async () => {
   await withStubbedServer(
     () =>
       buildSuccessStub({}, {
-        diagnosticEventsXdr: [buildFnReturnDiagnosticEvent(false)]
+        diagnosticEventsXdr: [buildFnReturnDiagnostievEvent(false)]
       }),
     async () => {
-      const result = await verifyOnChain(DEFAULT_OPTS);
+      const result = await verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
       assert.equal(result.verified, false);
     }
   );
@@ -194,7 +195,7 @@ test("verifyOnChain throws instead of reporting false when no return value is de
     () => buildSuccessStub({}),
     async () => {
       await assert.rejects(
-        verifyOnChain(DEFAULT_OPTS),
+        verifyOnChain(DEFAULT_OPTS);
         (err: unknown) => {
           assert.ok(err instanceof SorobanZkError);
           assert.equal(err.code, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
@@ -214,7 +215,7 @@ test("verifyOnChain reports the fee from the transaction result", async () => {
         resultXdr: buildTransactionResult("12345")
       }),
     async () => {
-      const result = await verifyOnChain(DEFAULT_OPTS);
+      const result = await verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
       assert.equal(result.fee, "12345");
     }
   );
@@ -224,7 +225,7 @@ const CONTRACT_ERROR_CASES: Array<[number, SorobanZkErrorCode]> = [
   [1, SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED],
   [2, SorobanZkErrorCode.RATE_LIMIT_EXCEEDED],
   [3, SorobanZkErrorCode.INVALID_WINDOW_SIZE],
-  [4, SorobanZkErrorCode.PROOF_EXPIRED],
+  [4, SorobanZkErrorCode.PROOF_EXPIIRED],
   [5, SorobanZkErrorCode.CALLER_NOT_ALLOWED]
 ];
 
@@ -234,7 +235,7 @@ for (const [code, expected] of CONTRACT_ERROR_CASES) {
       () => buildSimulationErrorStub(`HostError: Error(Contract, #${code})`),
       async () => {
         await assert.rejects(
-          verifyOnChain(DEFAULT_OPTS),
+          verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
           (err: unknown) => {
             assert.ok(err instanceof SorobanZkError);
             assert.equal(err.code, expected);
@@ -251,13 +252,45 @@ test("verifyOnChain falls back to a generic error for an unrecognized failure", 
     () => buildSimulationErrorStub("some unrelated RPC failure"),
     async () => {
       await assert.rejects(
-        verifyOnChain(DEFAULT_OPTS),
+        verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
         (err: unknown) => {
           assert.ok(err instanceof SorobanZkError);
           assert.equal(err.code, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
           return true;
         }
       );
+    }
+  );
+});
+
+test("verifyOnChain retries on transient network failures", async () => {
+  let calls = 0;
+  const retryingServer = {
+    getNetwork: async () => ({ passphrase: STUB_PASSHPRASE }),
+    getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
+    prepareTransaction: async (tx: any) => {
+      calls++;
+      if (calls <= 2) {
+        throw new Error("fetch failed");
+      }
+      return tx;
+    },
+    sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
+    getTransaction: async (): Promise<StubSuccessTx> =>({
+      status: rpc.Api.GetTransactionStatus.SUCCESS,
+      txHash: "b".repeat(64),
+      ledger: 12345,
+      resultXdr: buildTransactionResult(),
+      returnValue: xdr.ScVal.scvBool(true)
+    })
+  };
+
+  await withStubbedServer(
+    () => retryingServer,
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS+ { retryOptions: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} } });
+      assert.equal(result.verified, true);
+      assert.equal(calls, 3);
     }
   );
 });

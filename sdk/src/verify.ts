@@ -33,6 +33,53 @@ import { validateCalldata } from "./validate.js";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;
 
+export interface RetryOptions {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+function isRetryableError(error: unknown): boolean {
+  if (error instanceof SorobanZkError) {
+    return error.code === SorobanZkErrorCode.NETWORK_ERROR;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /(429|503|network|timeout|fetch)/i.test(message);
+}
+
+export async function withRetry<T>(
+  operation: () => Promise<T>,
+  retryOptions: RetryOptions | undefined,
+  operationName: string,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+): Promise<T> {
+  const maxAttempts = retryOptions?.maxAttempts ?? 3;
+  const baseDelayMs = retryOptions?.baseDelayMs ?? 500;
+  const maxDelayMs = retryOptions?.maxDelayMs ?? 10_000;
+
+  let attempt = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isRetryableError(error) || attempt >= maxAttempts - 1) {
+        throw error;
+      }
+      const delay = Math.min(
+        baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs,
+        maxDelayMs
+      );
+      if (typeof console !== "undefined" && console.debug) {
+        console.debug(
+          `[${operationName}] attempt ${attempt + 1}/${maxAttempts} failed: ${error instanceof Error ? error.message : String(error)}; retrying in ${delay}ms`
+        );
+      }
+      await sleep(delay);
+      attempt++;
+    }
+  }
+}
+
 function makeBytesScVal(bytes: Buffer): xdr.ScVal {
   return xdr.ScVal.scvBytes(bytes);
 }
@@ -120,12 +167,20 @@ function classifyError(error: unknown): SorobanZkError {
 
   const lowered = message.toLowerCase();
 
-  if (lowered.includes("resource") || lowered.includes("instruction") || lowered.includes("limit")) {
-    return new SorobanZkError(message, SorobanZkErrorCode.RESOURCE_LIMIT_EXCEEDED);
+  if (
+    lowered.includes("network") ||
+    lowered.includes("fetch") ||
+    lowered.includes("timeout") ||
+    lowered.includes("429") ||
+    lowered.includes("503") ||
+    lowered.includes("too many requests") ||
+    lowered.includes("service unavailable")
+  ) {
+    return new SorobanZkError(message, SorobanZkErrorCode.NETWORK_ERROR);
   }
 
-  if (lowered.includes("network") || lowered.includes("fetch") || lowered.includes("timeout")) {
-    return new SorobanZkError(message, SorobanZkErrorCode.NETWORK_ERROR);
+  if (lowered.includes("resource") || lowered.includes("instruction") || lowered.includes("limit")) {
+    return new SorobanZkError(message, SorobanZkErrorCode.RESOURCE_LIMIT_EXCEEDED);
   }
 
   return new SorobanZkError(message, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
@@ -221,107 +276,113 @@ function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
   );
 }
 
-export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
+export async function verifyOnChain(
+  opts: VerifyOptions & { retryOptions?: RetryOptions }
+): Promise<VerifyResult> {
   const calldata = resolveCalldata(opts);
   validateCalldata(calldata);
 
-  try {
-    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
-    const network = await server.getNetwork();
+  const executeVerifyOnChain = async (): Promise<VerifyResult> => {
+    try {
+      const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+      const network = await server.getNetwork();
 
-    if (opts.bundle) {
-      assertBundleNetwork(opts.bundle, network.passphrase);
-    }
-
-    const account = await server.getAccount(opts.keypair.publicKey());
-    const contract = new Contract(opts.contractId);
-    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
-
-    const transaction = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: network.passphrase
-    })
-      .addOperation(
-        contract.call(
-          "verify_proof",
-          callerScVal,
-          makeBytesScVal(calldata.proofA),
-          makeBytesScVal(calldata.proofB),
-          makeBytesScVal(calldata.proofC),
-          makePublicInputsScVal(calldata.publicInputs)
-        )
-      )
-      .setTimeout(30)
-      .build();
-
-    const prepared = await server.prepareTransaction(transaction);
-    prepared.sign(opts.keypair);
-
-    const sendResult = await server.sendTransaction(prepared);
-    if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
-      throw new SorobanZkError(
-        `Transaction submission failed with status ${sendResult.status}`,
-        SorobanZkErrorCode.TRANSACTION_REJECTED
-      );
-    }
-
-    const started = Date.now();
-    while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
-      const result = await server.getTransaction(sendResult.hash);
-
-      if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        continue;
+      if (opts.bundle) {
+        assertBundleNetwork(opts.bundle, network.passphrase);
       }
 
-      if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-        // A `Result::Err` from `verify_proof` is normally caught below, at
-        // `prepareTransaction`'s simulation step, since simulation executes
-        // the call against current ledger state deterministically. Reaching
-        // FAILED here means the transaction was rejected *after* a
-        // successful simulation (e.g. ledger state changed between
-        // simulating and applying), so there's no reliable Error(Contract,
-        // #N) string to decode from diagnostic events at this point.
+      const account = await server.getAccount(opts.keypair.publicKey());
+      const contract = new Contract(opts.contractId);
+      const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: network.passphrase
+      })
+        .addOperation(
+          contract.call(
+            "verify_proof",
+            callerScVal,
+            makeBytesScVal(calldata.proofA),
+            makeBytesScVal(calldata.proofB),
+            makeBytesScVal(calldata.proofC),
+            makePublicInputsScVal(calldata.publicInputs)
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const prepared = await server.prepareTransaction(transaction);
+      prepared.sign(opts.keypair);
+
+      const sendResult = await server.sendTransaction(prepared);
+      if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
         throw new SorobanZkError(
-          `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
+          `Transaction submission failed with status ${sendResult.status}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
         );
       }
 
-      if (typeof result.ledger !== "number" || !result.resultXdr) {
-        throw new SorobanZkError(
-          `Transaction ${result.txHash} did not include the expected success payload`,
-          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
-        );
+      const started = Date.now();
+      while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+        const result = await server.getTransaction(sendResult.hash);
+
+        if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          continue;
+        }
+
+        if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+          // A `Result::Err` from `verify_proof` is normally caught below, at
+          // `prepareTransaction`'s simulation step, since simulation executes
+          // the call against current ledger state deterministically. Reaching
+          // FAILED here means the transaction was rejected *after* a
+          // successful simulation (e.g. ledger state changed between
+          // simulating and applying), so there's no reliable Error(Contract,
+          // #N) string to decode from diagnostic events at this point.
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
+            SorobanZkErrorCode.TRANSACTION_REJECTED
+          );
+        }
+
+        if (typeof result.ledger !== "number" || !result.resultXdr) {
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} did not include the expected success payload`,
+            SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+          );
+        }
+
+        const returnValue = decodeVerifyReturnValue(result);
+        if (typeof returnValue !== "boolean") {
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} carried no decodable verify_proof return value`,
+            SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+          );
+        }
+
+        return {
+          verified: returnValue,
+          txHash: result.txHash,
+          ledger: result.ledger,
+          fee: feeFromResult(result.resultXdr)
+        };
       }
 
-      const returnValue = decodeVerifyReturnValue(result);
-      if (typeof returnValue !== "boolean") {
-        throw new SorobanZkError(
-          `Transaction ${result.txHash} carried no decodable verify_proof return value`,
-          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
-        );
+      throw new SorobanZkError(
+        "Timed out waiting for transaction confirmation",
+        SorobanZkErrorCode.NETWORK_ERROR
+      );
+    } catch (error) {
+      if (error instanceof SorobanZkError) {
+        throw error;
       }
 
-      return {
-        verified: returnValue,
-        txHash: result.txHash,
-        ledger: result.ledger,
-        fee: feeFromResult(result.resultXdr)
-      };
+      throw classifyError(error);
     }
+  };
 
-    throw new SorobanZkError(
-      "Timed out waiting for transaction confirmation",
-      SorobanZkErrorCode.NETWORK_ERROR
-    );
-  } catch (error) {
-    if (error instanceof SorobanZkError) {
-      throw error;
-    }
-
-    throw classifyError(error);
-  }
+  return withRetry(executeVerifyOnChain, opts.retryOptions, "verifyOnChain");
 }
 
 // ---------------------------------------------------------------------------

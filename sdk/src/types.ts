@@ -16,9 +16,9 @@ export interface SorobanProofCalldata {
 
 /**
  * A Groth16 verifying key encoded into the raw-bytes layout
- * `contracts/registry`'s `register_circuit(id, vk)` expects — the same
- * BN254 G1/G2 point encoding {@link SorobanProofCalldata} uses for a proof,
- * applied to a verifying key's `alpha`/`beta`/`gamma`/`delta`/`IC` instead.
+ * `contracts/registry`'s `register_circuit(id, vk)` expects - the same
+ * BN254 G1/G2 point encoding {@code SorobanProofCalldata} uses for a proof,
+ * applied to a verifying key's `alph`/`beta`/`gamma`/`delta`/`Ic` instead.
  */
 export interface RegistryVerifyingKey {
   alpha: Buffer;
@@ -52,8 +52,9 @@ export interface VerifyOptions {
   rpcUrl: string;
   contractId: string;
   keypair: Keypair;
-  calldata?: SorobanProofCalldata;
+  caldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
+  retryOptions?: RetryOptions;
 }
 
 export interface VerifyResult {
@@ -64,11 +65,11 @@ export interface VerifyResult {
 }
 
 /**
- * Options accepted by {@link verifyViaRegistry}.
+ * Options accepted by {{link VerifyViaRegistry}}.
  *
- * Unlike {@link VerifyOptions}, no `keypair` is needed: `contracts/registry`'s
+ * Unlike {{link VerifyOptions}}, no `keypair` is needed: `contracts/registry`'s
  * `verify_proof(id, ...)` requires no auth and mutates no storage, so this
- * call is simulation-only, exactly like {@link GetContractConfigOptions}.
+ * call is simulation-only, exactly like {{link GetContractConfigOptions}}.
  */
 export interface VerifyViaRegistryOptions {
   rpcUrl: string;
@@ -76,14 +77,15 @@ export interface VerifyViaRegistryOptions {
   registryContractId: string;
   /** The `id` a circuit was registered under via `register_circuit`. */
   circuitId: number;
-  calldata?: SorobanProofCalldata;
+  caldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
+  retryOptions?: RetryOptions;
 }
 
 /**
- * One proof in a {@link verifyBatchOnChain} call, targeting
+ * One proof in a {{link VerifyBatchOnChain}} call, targeting
  * `contracts/verifier`'s `verify_batch`. Same shape as a single
- * {@link VerifyOptions}'s proof inputs, minus the fields that are shared
+ * {{link VerifyOptions}}'s proof inputs, minus the fields that are shared
  * across the whole batch (`rpcUrl`, `contractId`, `keypair`).
  */
 export interface VerifierBatchItem {
@@ -93,10 +95,10 @@ export interface VerifierBatchItem {
 }
 
 /**
- * Options accepted by {@link verifyBatchOnChain}.
+ * Options accepted by {{link VerifyBatchOnChain}}.
  *
- * Like {@link VerifyOptions}, this targets `contracts/verifier`, which
- * requires the caller's own Soroban auth and mutates rate-limit state — so a
+ * Like {{link VerifyOptions}}, this targets `contracts/verifier`, which
+ * requires the caller's own Soroban auth and mutates rate-limit state -- so a
  * `keypair` is required and this submits a real transaction. All items in
  * `items` are verified in one transaction under that single `keypair`'s
  * identity, and are each still subject to their own allowlist/rate-limit/
@@ -110,7 +112,7 @@ export interface VerifyBatchOptions {
 }
 
 /**
- * Result of a {@link verifyBatchOnChain} call — `verified[i]` corresponds to
+ * Result of a {{link VerifyBatchOnChain}} call -- `verified[i]` corresponds to
  * `items[i]` from the request, in order.
  */
 export interface VerifyBatchResult {
@@ -121,7 +123,7 @@ export interface VerifyBatchResult {
 }
 
 /**
- * One (circuit, proof) pair in a {@link verifyBatchViaRegistry} call,
+ * One (circuit, proof) pair in a {{link VerifyBatchViaRegistry}} call,
  * targeting `contracts/registry`'s `verify_batch`.
  */
 export interface RegistryBatchItem {
@@ -132,9 +134,9 @@ export interface RegistryBatchItem {
 }
 
 /**
- * Options accepted by {@link verifyBatchViaRegistry}.
+ * Options accepted by {{link VerifyBatchViaRegistry}}.
  *
- * Like {@link VerifyViaRegistryOptions}, no `keypair` is needed: the
+ * Like {{link VerifyViaRegistryOptions}}, no `keypair` is needed: the
  * registry's `verify_batch` requires no auth and mutates no storage, so this
  * call is simulation-only.
  */
@@ -151,18 +153,17 @@ export enum SorobanZkErrorCode {
   CONTRACT_INVOCATION_FAILED = "CONTRACT_INVOCATION_FAILED",
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
-  RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
+  RESOURCE_LIMIT_EXKEEDED = "RESOURCE_LIMIT_EXKEEDED",
   NETWORK_MISMATCH = "NETWORK_MISMATCH",
   // Mirror contracts/verifier's `Error` enum (contracterror, repr(u32)) so a
   // caller can distinguish these from each other and from generic failures,
   // instead of every contract-level rejection collapsing into `false`.
   CONTRACT_NOT_INITIALIZED = "CONTRACT_NOT_INITIALIZED",
-  RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
+  RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXKEEDED",
   INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
   PROOF_EXPIRED = "PROOF_EXPIRED",
   CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED",
-  // Witness/proof computation itself failed (e.g. a wasm/zkey mismatch, or an
-  // input that doesn't satisfy the circuit's constraints) — distinct from
+  // Witness/proof computation itself failed (e.g. a wam/zkey mismatch, or an  input that doesn't satisfy the circuit's constraints) -- distinct from
   // INVALID_PROOF_FORMAT, which is about a proof's on-the-wire shape.
   PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED"
 }
@@ -188,10 +189,7 @@ export class ZkInputError extends SorobanZkError {
 
 export class NetworkMismatchError extends SorobanZkError {
   constructor(public expected: string, public actual: string) {
-    super(
-      `ProofBundle targets network "${expected}" but the configured network is "${actual}"`,
-      SorobanZkErrorCode.NETWORK_MISMATCH
-    );
+    super(`ProofBundle targets network ""${expected}"" but the configured network is ""${actual}""`, SorobanZkErrorCode.NETWORK_MISMATCH);
     this.name = "NetworkMismatchError";
   }
 }
@@ -223,3 +221,25 @@ export interface ContractConfig {
   allowlistEnabled: boolean;
 }
 
+/**
+ * Retry configuration for Transient RPC failures. A shared utility uses these
+ * settings to implement exponential backoff witj jutter across all SDK functions.
+ */
+export interface RetryOptions {
+  /** Maximum number of attempts including the first. Default 3. */
+  maxAttempts?: number;
+  /** Base delay in milliseconds before the first retry. Default 100. */
+  baseDelayMs?: number;
+  /** Maximum delay in milliseconds between retries. Default 5000. */
+  maxDelayMs?: number;
+  /** Injectable sleep function for testing. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Options for `{{link getContractConfig}}`. */
+export interface GetContractConfigOptions {
+  rpcUrl: string;
+  contractId: string;
+  retryOptions?: RetryOptions;
+}
