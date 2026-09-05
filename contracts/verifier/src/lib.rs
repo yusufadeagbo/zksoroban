@@ -1,5 +1,7 @@
 #![no_std]
 
+use core::convert::TryInto;
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
@@ -62,6 +64,7 @@ enum DataKey {
     AllowlistEnabled,
     Allowlist(Address),
     VerificationCount(BytesN<32>),
+    Nullifier(BytesN<32>),
 }
 
 #[contracterror]
@@ -75,6 +78,8 @@ pub enum Error {
     CallerNotAllowed = 5,
     InvalidVerifyingKey = 6,
     NoPendingAdmin = 7,
+    AlreadyUsed = 8,
+    InvalidProof = 9,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -318,6 +323,21 @@ impl VerifierContract {
         Ok(())
     }
 
+    fn compute_nullifier(env: &Env, proof_a: &Bytes) -> Result<BytesN<32>, Error> {
+        if proof_a.len() != PROOF_A_LEN {
+            return Err(Error::InvalidProof);
+        }
+        let x: BytesN<32> = proof_a
+            .slice(0..32)
+            .try_into()
+            .map_err(|_| Error::InvalidProof)?;
+        let y: BytesN<32> = proof_a
+            .slice(32..64)
+            .try_into()
+            .map_err(|_| Error::InvalidProof)?;
+        Ok(env.poseidon().hash(&[x, y]))
+    }
+
     pub fn verify_proof(
         env: Env,
         caller: Address,
@@ -327,6 +347,15 @@ impl VerifierContract {
         public_inputs: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
         caller.require_auth();
+
+        let nullifier = Self::compute_nullifier(&env, &proof_a)?;
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Nullifier(nullifier.clone()))
+        {
+            return Err(Error::AlreadyUsed);
+        }
 
         let item = ProofItem {
             proof_a,
@@ -340,6 +369,11 @@ impl VerifierContract {
         // here rolls back the whole call (see the note on publish_verification_result),
         // so publishing first would be a silent no-op.
         if let Ok(success) = result {
+            if success {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Nullifier(nullifier), &true);
+            }
             publish_verification_result(&env, &caller, success, &item.public_inputs);
         }
 
@@ -372,9 +406,28 @@ impl VerifierContract {
 
         let mut results = Vec::new(&env);
         for item in proofs.iter() {
-            let success = match verify_one(&env, &caller, &item) {
-                Ok(success) => success,
-                Err(Error::NotInitialized) => return Err(Error::NotInitialized),
+            let success = match Self::compute_nullifier(&env, &item.proof_a) {
+                Ok(nullifier) => {
+                    if env
+                        .storage()
+                        .persistent()
+                        .has(&DataKey::Nullifier(nullifier.clone()))
+                    {
+                        false
+                    } else {
+                        match verify_one(&env, &caller, &item) {
+                            Ok(true) => {
+                                env.storage()
+                                    .persistent()
+                                    .set(&DataKey::Nullifier(nullifier), &true);
+                                true
+                            }
+                            Ok(false) => false,
+                            Err(Error::NotInitialized) => return Err(Error::NotInitialized),
+                            Err(_) => false,
+                        }
+                    }
+                }
                 Err(_) => false,
             };
             publish_verification_result(&env, &caller, success, &item.public_inputs);

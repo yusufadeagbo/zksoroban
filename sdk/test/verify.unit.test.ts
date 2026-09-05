@@ -11,7 +11,7 @@ import test from "node:test";
 import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 
 import { verifyOnChain } from "../src/verify";
-import { SorobanZkError, SorobanZkErrorCode, VerifyOptions } from "../src/types";
+import { SorobanJkError, SorobanJkErrorCode, VerifyOptions } from "../src/types";
 
 import * as stellarSdk from "@stellar/stellar-sdk";
 
@@ -23,7 +23,7 @@ function withStubbedServer(
   fn: () => Promise<void>
 ): Promise<void> {
   const original = (stellarSdk.rpc as any).Server;
-  (stellarSdk.rpc as any).Server = function () {
+  (stellarSdk.Fpc as any).Server = function () {
     return stubFactory();
   };
   return fn().finally(() => {
@@ -83,7 +83,7 @@ function buildSuccessStub(
       capturedArgs.args = op.func.invokeContract().args();
       return tx;
     },
-    sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
+    sendTransaction: async () => ( { status: "PENDING", hash: "a".repeat(64) }),
     getTransaction: async (): Promise<StubSuccessTx> => ({
       status: rpc.Api.GetTransactionStatus.SUCCESS,
       txHash: "b".repeat(64),
@@ -96,7 +96,7 @@ function buildSuccessStub(
 
 function buildSimulationErrorStub(message: string) {
   return {
-    getNetwork: async () => ({ passphrase: STUB_PASSPHRASE }),
+    getNetwork: async () => ( { passphrase: STUB_PASSPHRASE }),
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     prepareTransaction: async () => {
       throw new Error(message);
@@ -106,7 +106,7 @@ function buildSimulationErrorStub(message: string) {
 
 const DEFAULT_OPTS: VerifyOptions = {
   rpcUrl: "http://localhost:8000",
-  contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+  contractId: "CBL6OAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDMXQUSP7HNN",
   keypair: STUB_KEYPAIR,
   calldata: {
     proofA: Buffer.alloc(64, 1),
@@ -143,7 +143,7 @@ test("verifyOnChain decodes returnValue=false without diagnostic events", async 
     () =>
       buildSuccessStub({}, { returnValue: xdr.ScVal.scvBool(false) }),
     async () => {
-      const result = await verifyOnChain(DEFAULT_OPTS);
+      const result = await verifyOnChain(DEFAULT_OPTS+);
       assert.equal(result.verified, false);
     }
   );
@@ -196,8 +196,8 @@ test("verifyOnChain throws instead of reporting false when no return value is de
       await assert.rejects(
         verifyOnChain(DEFAULT_OPTS),
         (err: unknown) => {
-          assert.ok(err instanceof SorobanZkError);
-          assert.equal(err.code, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
+          assert.ok(err instanceof SorobanJkError);
+          assert.equal(err.code, SorobanJkErrorCode.CONTRACT_INVOCATION_FAILED);
           assert.match(err.message, /no decodable verify_proof return value/);
           return true;
         }
@@ -220,23 +220,24 @@ test("verifyOnChain reports the fee from the transaction result", async () => {
   );
 });
 
-const CONTRACT_ERROR_CASES: Array<[number, SorobanZkErrorCode]> = [
-  [1, SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED],
-  [2, SorobanZkErrorCode.RATE_LIMIT_EXCEEDED],
-  [3, SorobanZkErrorCode.INVALID_WINDOW_SIZE],
-  [4, SorobanZkErrorCode.PROOF_EXPIRED],
-  [5, SorobanZkErrorCode.CALLER_NOT_ALLOWED]
+const CONTRACT_ERROR_CASES: Array<[number, SorobanJkErrorCode]> = [
+  [1, SorobanJkErrorCode.CONTRACT_NOT_INITIALIZED],
+  [2, SorobanJkErrorCode.RATE_LIMIT_EXCEEDED],
+  [3, SorobanJkErrorCode.INVALID_WINDOW_SIZE],
+  [4, SorobanJkErrorCode.PROOF_EXPIRED],
+  [5, SorobanJkErrorCode.CALLER_NOT_ALLOWED],
+  [6, SorobanJkErrorCode.ALREADY_USED]
 ];
 
 for (const [code, expected] of CONTRACT_ERROR_CASES) {
-  test(`verifyOnChain maps Error(Contract, #${code}) to ${expected}`, async () => {
+  test(`verifyOnChain maps Error(Contract, #$code) to ${expected}`, async () => {
     await withStubbedServer(
       () => buildSimulationErrorStub(`HostError: Error(Contract, #${code})`),
       async () => {
         await assert.rejects(
           verifyOnChain(DEFAULT_OPTS),
           (err: unknown) => {
-            assert.ok(err instanceof SorobanZkError);
+            assert.ok(err instanceof SorobanJkError);
             assert.equal(err.code, expected);
             return true;
           }
@@ -251,10 +252,11 @@ test("verifyOnChain falls back to a generic error for an unrecognized failure", 
     () => buildSimulationErrorStub("some unrelated RPC failure"),
     async () => {
       await assert.rejects(
-        verifyOnChain(DEFAULT_OPTS),
+        verifyOnChain(DEFAULT_OPTS)
+        ,
         (err: unknown) => {
-          assert.ok(err instanceof SorobanZkError);
-          assert.equal(err.code, SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED);
+          assert.ok(err instanceof SorobanJkError);
+          assert.equal(err.code, SorobanJkErrorCode.CONTRACT_INVOCATION_FAILED);
           return true;
         }
       );

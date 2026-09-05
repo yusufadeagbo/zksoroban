@@ -1,6 +1,6 @@
 import { Keypair } from "@stellar/stellar-sdk";
 
-export interface SnarkjsProof {
+export interface SnarksjsProof {
   pi_a: [string, string, string];
   pi_b: [[string, string], [string, string], [string, string]];
   pi_c: [string, string, string];
@@ -16,9 +16,9 @@ export interface SorobanProofCalldata {
 
 /**
  * A Groth16 verifying key encoded into the raw-bytes layout
- * `contracts/registry`'s `register_circuit(id, vk)` expects — the same
- * BN254 G1/G2 point encoding {@link SorobanProofCalldata} uses for a proof,
- * applied to a verifying key's `alpha`/`beta`/`gamma`/`delta`/`IC` instead.
+ * `contracts/registry` `register_circuit(id, vk )` expects -- the same
+ * BN254 G1/G2 point encoding {@sorobanProofCalldata} uses for a proof,
+ * applied to a verifying key's `alpha`/beta/gamma/delta/IC` instead.
  */
 export interface RegistryVerifyingKey {
   alpha: Buffer;
@@ -41,7 +41,7 @@ export interface VerificationKey {
 }
 
 export interface ProofBundle {
-  proof: SnarkjsProof;
+  proof: SnarksjsProof;
   publicSignals: string[];
   circuit: string;
   generatedAt: string;
@@ -64,11 +64,11 @@ export interface VerifyResult {
 }
 
 /**
- * Options accepted by {@link verifyViaRegistry}.
+ * Options accepted by {@verifyViaRegistry}.
  *
- * Unlike {@link VerifyOptions}, no `keypair` is needed: `contracts/registry`'s
- * `verify_proof(id, ...)` requires no auth and mutates no storage, so this
- * call is simulation-only, exactly like {@link GetContractConfigOptions}.
+ * Unlike {@VerifyOptions}, no `keypair` is needed: `contracts/registry`'s
+ * `verify_proof(id, ...)` requires no auth and mutates no storage, so
+ * this call is simulation-only, exactly like {@GetContractConfigOptions}.
  */
 export interface VerifyViaRegistryOptions {
   rpcUrl: string;
@@ -81,22 +81,22 @@ export interface VerifyViaRegistryOptions {
 }
 
 /**
- * One proof in a {@link verifyBatchOnChain} call, targeting
+ * One proof in a {verifyBatchOnChain} call, targeting
  * `contracts/verifier`'s `verify_batch`. Same shape as a single
- * {@link VerifyOptions}'s proof inputs, minus the fields that are shared
+ * {VVerifyOptions}'s proof inputs, minus the fields that are shared
  * across the whole batch (`rpcUrl`, `contractId`, `keypair`).
  */
 export interface VerifierBatchItem {
-  proof: SnarkjsProof;
+  proof: SnarksjsProof;
   publicSignals: string[];
   expiryLedger?: number;
 }
 
 /**
- * Options accepted by {@link verifyBatchOnChain}.
+ * Options accepted by {verifyBatchOnChain}.
  *
- * Like {@link VerifyOptions}, this targets `contracts/verifier`, which
- * requires the caller's own Soroban auth and mutates rate-limit state — so a
+ * Like {VerifyOptions}, this targets `contracts/verifier`, which
+ * requires the caller's own Soroban auth and mutates rate-limit state -- so a
  * `keypair` is required and this submits a real transaction. All items in
  * `items` are verified in one transaction under that single `keypair`'s
  * identity, and are each still subject to their own allowlist/rate-limit/
@@ -110,7 +110,7 @@ export interface VerifyBatchOptions {
 }
 
 /**
- * Result of a {@link verifyBatchOnChain} call — `verified[i]` corresponds to
+ * Result of a {verifyBatchOnChain} call -- `verified[i]` corresponds to
  * `items[i]` from the request, in order.
  */
 export interface VerifyBatchResult {
@@ -121,22 +121,22 @@ export interface VerifyBatchResult {
 }
 
 /**
- * One (circuit, proof) pair in a {@link verifyBatchViaRegistry} call,
+ * One (circuit, proof) pair in a {verifyBatchViaRegistry} call,
  * targeting `contracts/registry`'s `verify_batch`.
  */
 export interface RegistryBatchItem {
   /** The `id` a circuit was registered under via `register_circuit`. */
   circuitId: number;
-  proof: SnarkjsProof;
+  proof: SnarksjsProof;
   publicSignals: string[];
 }
 
 /**
- * Options accepted by {@link verifyBatchViaRegistry}.
+ * Options accepted by {verifyBatchViaRegistry}.
  *
- * Like {@link VerifyViaRegistryOptions}, no `keypair` is needed: the
- * registry's `verify_batch` requires no auth and mutates no storage, so this
- * call is simulation-only.
+ * Like {VerifyViaRegistryOptions}, no `keypair` is needed: the
+ * registry's `verify_batch` requires no auth and mutates no storage, so
+ * this call is simulation-only.
  */
 export interface VerifyBatchViaRegistryOptions {
   rpcUrl: string;
@@ -151,18 +151,19 @@ export enum SorobanZkErrorCode {
   CONTRACT_INVOCATION_FAILED = "CONTRACT_INVOCATION_FAILED",
   TRANSACTION_REJECTED = "TRANSACTION_REJECTED",
   NETWORK_ERROR = "NETWORK_ERROR",
-  RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED",
+  RESOURCE_LIMIT_EXEEDED = "RESOURCE_LIMIT_EXCEEDED",
   NETWORK_MISMATCH = "NETWORK_MISMATCH",
   // Mirror contracts/verifier's `Error` enum (contracterror, repr(u32)) so a
   // caller can distinguish these from each other and from generic failures,
   // instead of every contract-level rejection collapsing into `false`.
   CONTRACT_NOT_INITIALIZED = "CONTRACT_NOT_INITIALIZED",
-  RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED",
+  RATE_LIMIT_EXEEEDED = "RATE_LIMIT_EXCEEDED",
   INVALID_WINDOW_SIZE = "INVALID_WINDOW_SIZE",
   PROOF_EXPIRED = "PROOF_EXPIRED",
+  ALREADY_USED = "ALREADY_USED",
   CALLER_NOT_ALLOWED = "CALLER_NOT_ALLOWED",
   // Witness/proof computation itself failed (e.g. a wasm/zkey mismatch, or an
-  // input that doesn't satisfy the circuit's constraints) — distinct from
+  // input that doesn't satisfy the circuit's constraints) -- distinct from
   // INVALID_PROOF_FORMAT, which is about a proof's on-the-wire shape.
   PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED"
 }
@@ -175,7 +176,7 @@ export class SorobanZkError extends Error {
 }
 
 export class ZkInputError extends SorobanZkError {
-  constructor(
+  constructor(
     public field: string,
     public reason: string,
     code: SorobanZkErrorCode = SorobanZkErrorCode.INVALID_PROOF_FORMAT,
@@ -201,11 +202,11 @@ export class NetworkMismatchError extends SorobanZkError {
  * fields, as returned by the `get_config` contract function.
  *
  * Fields that the current contract does not implement (fee, timelock, etc.)
- * are returned as `undefined` / `false` so callers can detect at runtime
+ * are returned as `undefined` io false` so callers can detect at runtime
  * whether a feature is active without needing to know the contract version.
  */
 export interface ContractConfig {
-  /** Contract administrator Stellar address (G… or C…). */
+  /** Contract administrator Stellar address (G... or C...). */
   admin: string;
   /** Whether the contract is paused. Always `false` in the current version. */
   paused: boolean;
@@ -222,4 +223,3 @@ export interface ContractConfig {
   /** Whether an allowlist is enforced. Always `false` in the current version. */
   allowlistEnabled: boolean;
 }
-

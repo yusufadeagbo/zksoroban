@@ -446,6 +446,46 @@ fn call_count_lives_in_temporary_storage_with_window_ttl() {
 }
 
 #[test]
+fn verify_proof_rejects_replay() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    let replay = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(replay, Err(Ok(Error::AlreadyUsed)));
+}
+
+#[test]
+fn verify_proof_accepts_two_different_valid_proofs() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller));
+
+    // Generate a different valid proof by negating A and B (preserves the pairing).
+    let neg_a = (-Bn254G1Affine::from_array(&env, &VALID_PROOF_A)).to_array();
+    let neg_b = (-Bn254G2Affine::from_array(&env, &VALID_PROOF_B)).to_array();
+
+    let result = client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &neg_a),
+        &Bytes::from_array(&env, &neg_b),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert!(result);
+}
+
+#[test]
 fn call_count_entry_is_evicted_once_its_ttl_expires() {
     let (env, _admin, client) = setup(10, 50);
     let caller = Address::generate(&env);
