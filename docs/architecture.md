@@ -169,6 +169,22 @@ an older deployment already wrote under `instance()` stay there,
 unread and unused by the new code, until that instance is redeployed
 from scratch.
 
+### Verification-Count Storage
+
+`VerificationCount(BytesN<32>)` tracks how many times `verify_proof`/
+`verify_batch` has *successfully* verified a proof for a given
+public-input commitment (the same sha256 hash published as `inputs_hash`
+in `VerificationResult`), for off-chain analytics and abuse detection —
+queryable via `verification_count`.
+
+This uses `env.storage().instance()` with a `u64` counter, per issue
+#41's specification. Unlike `CallCount` (finding #6), the commitment is
+derived from the proof's public inputs which the circuit author controls,
+so an attacker cannot mint unbounded distinct commitments to grow
+storage. The counter increments only on a successful pairing check —
+failed proof attempts do not affect the count. The admin can call
+`upgrade` to redeploy from scratch if storage ever becomes a concern.
+
 ## Events
 
 Both `contracts/verifier::verify_proof` and `contracts/registry::verify_proof`

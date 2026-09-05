@@ -63,6 +63,7 @@ enum DataKey {
     CallCount(Address, u32),
     AllowlistEnabled,
     Allowlist(Address),
+    VerificationCount(BytesN<32>),
     Nullifier(BytesN<32>),
 }
 
@@ -130,6 +131,22 @@ impl VerifierContract {
 
     pub fn version(env: Env) -> String {
         String::from_str(&env, CONTRACT_VERSION)
+    }
+
+    /// Number of times `verify_proof`/`verify_batch` has successfully
+    /// verified a proof for `commitment` — the sha256 hash of the
+    /// concatenated public inputs, i.e. the same value published as
+    /// `inputs_hash` in `VerificationResult`. Intended for off-chain
+    /// analytics and abuse detection (e.g. flagging a commitment verified
+    /// far more often than legitimate usage would produce).
+    ///
+    /// Returns 0 for a commitment that has never been successfully
+    /// verified.
+    pub fn verification_count(env: Env, commitment: BytesN<32>) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::VerificationCount(commitment))
+            .unwrap_or(0)
     }
 
     pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
@@ -500,6 +517,11 @@ fn verify_one(env: &Env, caller: &Address, item: &ProofItem) -> Result<bool, Err
         vec![env, proof_b, vk_beta, vk_gamma, vk_delta],
     );
 
+    if verified {
+        let commitment = compute_inputs_hash(env, &item.public_inputs);
+        record_verification_attempt(env, &commitment);
+    }
+
     Ok(verified)
 }
 
@@ -522,6 +544,23 @@ fn publish_verification_result(
         inputs_hash: compute_inputs_hash(env, public_inputs),
     }
     .publish(env);
+}
+
+/// Track how many times a proof has been successfully verified for a given
+/// public-input commitment, for off-chain analytics and abuse detection
+/// (see `VerifierContract::verification_count`).
+///
+/// The counter uses `instance()` storage so it persists across calls and
+/// never resets — unlike `CallCount` (finding #6), the commitment is
+/// derived from the proof's public inputs which the contract author
+/// controls via the circuit, so an attacker cannot mint unbounded
+/// distinct commitments to grow storage. The admin can call `upgrade`
+/// to redeploy from scratch if storage ever becomes a concern.
+fn record_verification_attempt(env: &Env, commitment: &BytesN<32>) {
+    let key = DataKey::VerificationCount(commitment.clone());
+    let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
+    let next = current + 1;
+    env.storage().instance().set(&key, &next);
 }
 
 fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32> {
