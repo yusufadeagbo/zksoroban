@@ -31,6 +31,26 @@ call — no funded Testnet account or secret key needed. Accept the
 interactive prompts' defaults to run against the deployed registry
 directly.
 
+Hitting flaky or rate-limited RPC endpoints? Pass a `retry` policy to
+`verifyViaRegistry` (or any of the other RPC-touching calls) to retry
+transient failures with exponential backoff (see
+[docs/architecture.md](docs/architecture.md#retry--exponential-backoff)):
+
+```ts
+import { verifyViaRegistry } from "@zksoroban/sdk";
+
+const verified = await verifyViaRegistry({
+  rpcUrl,
+  registryContractId,
+  circuitId,
+  bundle,
+  retry: { maxRetries: 3, baseDelayMs: 500 },
+});
+```
+
+Signed transaction submissions are never replayed; only the safe-to-
+repeat read-only requests are.
+
 Useful maintenance commands:
 
 - `make lint`: run Rust formatting, clippy, and TypeScript checks.
@@ -44,7 +64,7 @@ Expected result:
 
 - `contracts/verifier/`: a Soroban verifier contract for a Groth16 proof over BN254, gated by caller auth, per-caller rate limiting, and proof expiry.
 - `contracts/registry/`: a multi-circuit verifying-key registry, deployed to Testnet — see [docs/architecture.md](docs/architecture.md#verifying-key-registry).
-- `sdk/`: a TypeScript SDK for Poseidon hashing, snarkjs proof formatting, and on-chain verification.
+- `sdk/`: a TypeScript SDK for Poseidon hashing, snarkjs proof formatting, and on-chain verification — with opt-in retry-with-backoff for transient RPC failures (see [docs/architecture.md](docs/architecture.md#retry--exponential-backoff)).
 - `circuits/`: the reference Poseidon preimage circuit (wired to both contracts above) plus three additional circuits — `merkle_inclusion`, `range_proof`, `threshold_2of3` — registered with `contracts/registry` and tested there, but not yet on the live Testnet deployment (see docs/multi-circuit.md).
 - `demo/`: an end-to-end script that generates a fresh secret, proves knowledge of its Poseidon commitment, and verifies it on Stellar Testnet.
 - `docs/`: architecture notes, ZK primer, proof format specification, security audit checklist, and Poseidon parameter notes.

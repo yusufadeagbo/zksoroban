@@ -11,11 +11,13 @@ import {
   xdr
 } from "@stellar/stellar-sdk";
 
+import { withRetry } from "./retry.js";
 import { formatProof } from "./proof.js";
 import {
   ContractConfig,
   NetworkMismatchError,
   ProofBundle,
+  RetryOptions,
   RegistryBatchItem,
   SorobanProofCalldata,
   SorobanZkError,
@@ -226,7 +228,10 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
   validateCalldata(calldata);
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
+      opts.retry
+    );
     const network = await server.getNetwork();
 
     if (opts.bundle) {
@@ -368,7 +373,10 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
   calldataItems.forEach(validateCalldata);
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
+      opts.retry
+    );
     const network = await server.getNetwork();
 
     const account = await server.getAccount(opts.keypair.publicKey());
@@ -492,7 +500,10 @@ export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVe
   validateCalldata(calldata);
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
+      opts.retry
+    );
     const network = await server.getNetwork();
 
     if (opts.bundle) {
@@ -584,9 +595,12 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
   validateCalldata(calldata);
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, {
-      allowHttp: opts.rpcUrl.startsWith("http://")
-    });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, {
+        allowHttp: opts.rpcUrl.startsWith("http://")
+      }),
+      opts.retry
+    );
     const network = await server.getNetwork();
 
     if (opts.bundle) {
@@ -690,9 +704,12 @@ export async function verifyBatchViaRegistry(
   calldataItems.forEach(({ calldata }) => validateCalldata(calldata));
 
   try {
-    const server = new rpc.Server(opts.rpcUrl, {
-      allowHttp: opts.rpcUrl.startsWith("http://")
-    });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, {
+        allowHttp: opts.rpcUrl.startsWith("http://")
+      }),
+      opts.retry
+    );
     const network = await server.getNetwork();
 
     const contract = new Contract(opts.registryContractId);
@@ -757,6 +774,11 @@ export interface GetContractConfigOptions {
   rpcUrl: string;
   /** Bech32m contract address (starts with `C`). */
   contractId: string;
+  /**
+   * Optional retry policy for transient RPC failures. Omit for the
+   * previous single-attempt behavior — see {@link RetryOptions}.
+   */
+  retry?: RetryOptions;
 }
 
 /**
@@ -779,9 +801,12 @@ export async function getContractConfig(
   opts: GetContractConfigOptions
 ): Promise<ContractConfig> {
   try {
-    const server = new rpc.Server(opts.rpcUrl, {
-      allowHttp: opts.rpcUrl.startsWith("http://")
-    });
+    const server = withRetry(
+      new rpc.Server(opts.rpcUrl, {
+        allowHttp: opts.rpcUrl.startsWith("http://")
+      }),
+      opts.retry
+    );
     const network = await server.getNetwork();
     const contract = new Contract(opts.contractId);
 

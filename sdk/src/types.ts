@@ -48,12 +48,72 @@ export interface ProofBundle {
   networkPassphrase: string;
 }
 
+/**
+ * Options for the SDK's opt-in retry behavior.
+ *
+ * Passing a `retry` object to any RPC-touching call (`verifyOnChain`,
+ * `verifyBatchOnChain`, `verifyViaRegistry`, `verifyBatchViaRegistry`,
+ * `estimateVerifyFee`, `getContractConfig`) turns on per-request retries
+ * with exponential backoff for transient failures. Omitting it keeps the
+ * previous behavior — a single attempt, no retries.
+ *
+ * See `docs/architecture.md` ("Retry & Exponential Backoff") for exactly
+ * which requests are retried and which are deliberately not.
+ */
+export interface RetryOptions {
+  /**
+   * How many times to retry after the initial attempt fails. Defaults to
+   * `3`; `0` disables retries explicitly.
+   */
+  maxRetries?: number;
+  /**
+   * Base of the exponential backoff curve in milliseconds: the delay after
+   * the first failed attempt, doubling each time. Defaults to `500`.
+   */
+  baseDelayMs?: number;
+  /**
+   * Ceiling for any single backoff delay in milliseconds. Defaults to
+   * `8000`.
+   */
+  maxDelayMs?: number;
+  /**
+   * Full jitter — spread each delay uniformly over `[0, delay]` so many
+   * concurrent callers don't retry in lockstep. Defaults to `true`.
+   */
+  jitter?: boolean;
+  /**
+   * Called once per scheduled retry, just before the backoff sleep.
+   * Never called for a failure that exhausts the retries or isn't
+   * transient — those throw to the caller instead.
+   */
+  onRetry?: (info: RetryAttemptInfo) => void;
+}
+
+/**
+ * Details of one scheduled retry, passed to {@link RetryOptions.onRetry}.
+ */
+export interface RetryAttemptInfo {
+  /** Human-readable label for the request that failed (e.g. `"getAccount"`). */
+  label: string;
+  /** 1-based attempt number of the attempt that just failed. */
+  attempt: number;
+  /** Milliseconds the SDK will wait before the next attempt. */
+  delayMs: number;
+  /** The error that triggered this retry. */
+  error: unknown;
+}
+
 export interface VerifyOptions {
   rpcUrl: string;
   contractId: string;
   keypair: Keypair;
   calldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
+  /**
+   * Optional retry policy for transient RPC failures. Omit for the
+   * previous single-attempt behavior — see {@link RetryOptions}.
+   */
+  retry?: RetryOptions;
 }
 
 export interface VerifyResult {
@@ -78,6 +138,11 @@ export interface VerifyViaRegistryOptions {
   circuitId: number;
   calldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
+  /**
+   * Optional retry policy for transient RPC failures. Omit for the
+   * previous single-attempt behavior — see {@link RetryOptions}.
+   */
+  retry?: RetryOptions;
 }
 
 /**
@@ -107,6 +172,11 @@ export interface VerifyBatchOptions {
   contractId: string;
   keypair: Keypair;
   items: VerifierBatchItem[];
+  /**
+   * Optional retry policy for transient RPC failures. Omit for the
+   * previous single-attempt behavior — see {@link RetryOptions}.
+   */
+  retry?: RetryOptions;
 }
 
 /**
@@ -143,6 +213,11 @@ export interface VerifyBatchViaRegistryOptions {
   /** Bech32m address of the deployed `contracts/registry` instance. */
   registryContractId: string;
   items: RegistryBatchItem[];
+  /**
+   * Optional retry policy for transient RPC failures. Omit for the
+   * previous single-attempt behavior — see {@link RetryOptions}.
+   */
+  retry?: RetryOptions;
 }
 
 export enum SorobanZkErrorCode {
