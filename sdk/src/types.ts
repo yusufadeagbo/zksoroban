@@ -78,6 +78,13 @@ export interface VerifyViaRegistryOptions {
   circuitId: number;
   calldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
+  /**
+   * Optional proof result cache.  When provided, a successful result is
+   * stored under a SHA-256 key derived from `(registryContractId, circuitId,
+   * proofA, proofB, proofC, publicInputs)` and re-used on subsequent calls
+   * with the same inputs, skipping the simulation round-trip entirely.
+   */
+  cache?: import("./cache.js").ProofResultCache;
 }
 
 /**
@@ -143,6 +150,13 @@ export interface VerifyBatchViaRegistryOptions {
   /** Bech32m address of the deployed `contracts/registry` instance. */
   registryContractId: string;
   items: RegistryBatchItem[];
+  /**
+   * Optional proof result cache.  When provided, each item's result is
+   * stored/retrieved under a SHA-256 key derived from `(registryContractId,
+   * circuitId, proofA, proofB, proofC, publicInputs)`.  Items that all hit
+   * the cache avoid the simulation call entirely.
+   */
+  cache?: import("./cache.js").ProofResultCache;
 }
 
 export enum SorobanZkErrorCode {
@@ -195,6 +209,45 @@ export class NetworkMismatchError extends SorobanZkError {
     this.name = "NetworkMismatchError";
   }
 }
+
+// ---------------------------------------------------------------------------
+// ProofResultCache types
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for constructing a {@link ProofResultCache}.
+ */
+export interface CacheOptions {
+  /**
+   * Maximum number of entries the cache holds before evicting the
+   * least-recently-used entry.  Defaults to `256`.
+   */
+  maxSize?: number;
+  /**
+   * Time-to-live for each entry in milliseconds.  Entries older than this
+   * are treated as cache misses on the next read.  Omit (or set to `0`) for
+   * no TTL.
+   */
+  ttlMs?: number;
+}
+
+/**
+ * A point-in-time snapshot of {@link ProofResultCache} usage.
+ */
+export interface CacheStats {
+  /** Number of entries currently in the cache. */
+  size: number;
+  /** Cumulative cache-hit count since the cache was created or last cleared. */
+  hits: number;
+  /** Cumulative cache-miss count since the cache was created or last cleared. */
+  misses: number;
+  /** The maximum number of entries the cache is allowed to hold. */
+  maxSize: number;
+  /** Configured TTL in milliseconds, or `undefined` when none is set. */
+  ttlMs: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
 
 /**
  * A read-only snapshot of all non-sensitive verifier contract configuration

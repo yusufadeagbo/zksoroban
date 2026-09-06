@@ -29,6 +29,7 @@ import {
   VerifyViaRegistryOptions
 } from "./types.js";
 import { validateCalldata } from "./validate.js";
+import { computeCacheKey } from "./cache.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 1_000;
@@ -583,6 +584,18 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
   const calldata = resolveRegistryCalldata(opts);
   validateCalldata(calldata);
 
+  // Cache lookup — skip the simulation round-trip when we already know the result.
+  const cacheKey = opts.cache
+    ? computeCacheKey(opts.registryContractId, opts.circuitId, calldata)
+    : undefined;
+
+  if (opts.cache && cacheKey !== undefined) {
+    const cached = opts.cache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+  }
+
   try {
     const server = new rpc.Server(opts.rpcUrl, {
       allowHttp: opts.rpcUrl.startsWith("http://")
@@ -636,7 +649,14 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
       );
     }
 
-    return Boolean(scValToNative(simResult.result.retval));
+    const verified = Boolean(scValToNative(simResult.result.retval));
+
+    // Store in cache before returning.
+    if (opts.cache && cacheKey !== undefined) {
+      opts.cache.set(cacheKey, verified);
+    }
+
+    return verified;
   } catch (error) {
     if (error instanceof SorobanZkError) {
       throw error;
@@ -689,6 +709,32 @@ export async function verifyBatchViaRegistry(
   }));
   calldataItems.forEach(({ calldata }) => validateCalldata(calldata));
 
+  // Compute per-item cache keys (undefined when no cache is provided).
+  const cacheKeys: (string | undefined)[] = opts.cache
+    ? calldataItems.map(({ circuitId, calldata }) =>
+        computeCacheKey(opts.registryContractId, circuitId, calldata)
+      )
+    : calldataItems.map(() => undefined);
+
+  // Check whether every item is already in cache.
+  if (opts.cache) {
+    const allCached: boolean[] = [];
+    let allHit = true;
+    for (let i = 0; i < cacheKeys.length; i++) {
+      const hit = opts.cache.get(cacheKeys[i]!);
+      if (hit === undefined) {
+        allHit = false;
+        break;
+      }
+      allCached.push(hit);
+    }
+    if (allHit) {
+      return allCached;
+    }
+    // Partial hits: fall through and re-run the full simulation — the
+    // server call is atomic and we can't skip individual items.
+  }
+
   try {
     const server = new rpc.Server(opts.rpcUrl, {
       allowHttp: opts.rpcUrl.startsWith("http://")
@@ -736,7 +782,19 @@ export async function verifyBatchViaRegistry(
     }
 
     const native = scValToNative(simResult.result.retval);
-    return Array.isArray(native) ? native.map(Boolean) : [];
+    const results: boolean[] = Array.isArray(native) ? native.map(Boolean) : [];
+
+    // Store each result in the cache.
+    if (opts.cache) {
+      for (let i = 0; i < results.length; i++) {
+        const key = cacheKeys[i];
+        if (key !== undefined) {
+          opts.cache.set(key, results[i]);
+        }
+      }
+    }
+
+    return results;
   } catch (error) {
     if (error instanceof SorobanZkError) {
       throw error;

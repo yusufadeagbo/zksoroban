@@ -85,10 +85,46 @@ Public API:
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
 - `getContractConfig(opts): Promise<ContractConfig>`
+- `ProofResultCache` — optional in-memory LRU+TTL cache for the two registry paths (see below)
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
 
-The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at call time.
+The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at call time. The one exception is the opt-in cache described next, whose state lives entirely in the `ProofResultCache` instance the caller creates and passes in.
+
+### Proof Result Cache
+
+`verifyViaRegistry` and `verifyBatchViaRegistry` are simulation-only calls
+(see [Verifying Key Registry](#verifying-key-registry) and
+[Batch Verification](#batch-verification)), but each one still costs a
+network round-trip. Applications that re-check the same proof — a session
+verifier re-validating a proof it already accepted, a UI re-rendering a
+verification badge — can skip that round-trip by passing an optional
+`ProofResultCache` via the `cache` option (see
+[zksoroban#16](https://github.com/yusufadeagbo/zksoroban/issues/16)):
+
+```ts
+import { ProofResultCache, verifyViaRegistry } from "@zksoroban/sdk";
+
+const cache = new ProofResultCache({ maxSize: 512, ttlMs: 60_000 });
+
+// First call: cache miss -> simulate against the registry.
+await verifyViaRegistry({ ...opts, cache });
+
+// Second call with the same inputs: served from cache, no RPC call.
+await verifyViaRegistry({ ...opts, cache });
+
+console.log(cache.stats()); // { size: 1, hits: 1, misses: 1, ... }
+```
+
+Key properties:
+
+- **Cache key**: SHA-256 over `registryContractId | circuitId | proofA | proofB | proofC | publicInputs`, length-prefixed so that two calls that differ in *any* input byte never collide. Two proofs that verify to the same `bool` for *different* inputs are cached separately.
+- **Eviction**: least-recently-used, via a doubly-linked list + `Map`, so both lookup and eviction are O(1). Default capacity is 256 entries; override with `maxSize`.
+- **TTL**: an optional `ttlMs` treats entries older than the TTL as misses on the next read, so a cached `true` from before a circuit's verifying key was rotated can't outlive the rotation by more than the TTL. A verification result does *not* go stale when the underlying proof bytes are unchanged — only key rotation or a registry redeploy can change a result for identical bytes — so the TTL is a safety valve, not a correctness requirement.
+- **Batch fast path**: `verifyBatchViaRegistry` returns the cached values directly when *every* item in the batch hits; a single miss re-runs the full batch simulation (the contract call is atomic, so partial serving is impossible), then stores every item's result individually.
+- **Scope**: memory-only, per-process. Nothing is written to the chain or to disk, and a fresh process starts cold. A cached result reflects what the registry returned at simulation time; if the registry's state changes (a `register_circuit` overwrote a circuit ID, or the contract was redeployed), stale entries are only corrected by the TTL expiring or `cache.clear()`.
+
+The cache never caches errors: a simulation that throws is not stored, so a transient RPC failure is retried on the next call. `false` results *are* cached — a rejected proof stays rejected for the same bytes.
 
 ## Contract Layer
 

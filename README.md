@@ -31,6 +31,18 @@ call — no funded Testnet account or secret key needed. Accept the
 interactive prompts' defaults to run against the deployed registry
 directly.
 
+Verifying the same proofs repeatedly? Pass a `ProofResultCache` to
+`verifyViaRegistry` / `verifyBatchViaRegistry` to skip repeat RPC
+round-trips (see
+[docs/architecture.md](docs/architecture.md#proof-result-cache)):
+
+```ts
+import { ProofResultCache, verifyViaRegistry } from "@zksoroban/sdk";
+
+const cache = new ProofResultCache({ ttlMs: 60_000 });
+await verifyViaRegistry({ rpcUrl, registryContractId, circuitId, bundle, cache });
+```
+
 Useful maintenance commands:
 
 - `make lint`: run Rust formatting, clippy, and TypeScript checks.
@@ -44,7 +56,7 @@ Expected result:
 
 - `contracts/verifier/`: a Soroban verifier contract for a Groth16 proof over BN254, gated by caller auth, per-caller rate limiting, and proof expiry.
 - `contracts/registry/`: a multi-circuit verifying-key registry, deployed to Testnet — see [docs/architecture.md](docs/architecture.md#verifying-key-registry).
-- `sdk/`: a TypeScript SDK for Poseidon hashing, snarkjs proof formatting, and on-chain verification.
+- `sdk/`: a TypeScript SDK for Poseidon hashing, snarkjs proof formatting, and on-chain verification — including an optional in-memory cache for repeated registry verifications (see [docs/architecture.md](docs/architecture.md#proof-result-cache)).
 - `circuits/`: the reference Poseidon preimage circuit (wired to both contracts above) plus three additional circuits — `merkle_inclusion`, `range_proof`, `threshold_2of3` — registered with `contracts/registry` and tested there, but not yet on the live Testnet deployment (see docs/multi-circuit.md).
 - `demo/`: an end-to-end script that generates a fresh secret, proves knowledge of its Poseidon commitment, and verifies it on Stellar Testnet.
 - `docs/`: architecture notes, ZK primer, proof format specification, security audit checklist, and Poseidon parameter notes.

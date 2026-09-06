@@ -1,3 +1,4 @@
+export * from "./cache.js";
 export * from "./poseidon.js";
 export * from "./proof.js";
 export * from "./types.js";
