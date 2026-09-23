@@ -54,7 +54,7 @@ function buildStub(simResult: object, capturedArgs: { args?: xdr.ScVal[] } = {})
     },
     simulateTransaction: async (tx: any) => {
       const op = tx.operations[0];
-      capturedArgs.args = op.func.invokeContract().args();
+      capturedArgs.args = op.func.invokeContract.args;
       return simResult;
     }
   };
@@ -89,8 +89,8 @@ test("verifyBatchViaRegistry passes one vec argument, one entry per item", async
 
       assert.ok(captured.args, "simulateTransaction should have been called");
       assert.equal(captured.args!.length, 1, "verify_batch(batch) takes 1 arg");
-      assert.equal(captured.args![0].switch().name, "scvVec");
-      assert.equal(captured.args![0].vec()!.length, DEFAULT_OPTS.items.length);
+      assert.equal(captured.args![0].type, "scvVec");
+      assert.equal(captured.args![0].vec!.length, DEFAULT_OPTS.items.length);
     }
   );
 });

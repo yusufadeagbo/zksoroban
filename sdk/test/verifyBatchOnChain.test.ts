@@ -38,11 +38,11 @@ function buildFnReturnDiagnosticEvent(values: boolean[]): string {
     topics: [xdr.ScVal.scvSymbol("fn_return"), xdr.ScVal.scvSymbol("verify_batch")],
     data: xdr.ScVal.scvVec(values.map((v) => xdr.ScVal.scvBool(v)))
   });
-  const body = new xdr.ContractEventBody(0, v0);
+  const body = xdr.ContractEventBody.v0(v0);
   const event = new xdr.ContractEvent({
-    ext: new xdr.ExtensionPoint(0),
+    ext: xdr.ExtensionPoint.v0(),
     contractId: null,
-    type: xdr.ContractEventType.contract(),
+    type: xdr.ContractEventType.contract,
     body
   });
   const diagnostic = new xdr.DiagnosticEvent({
@@ -54,7 +54,7 @@ function buildFnReturnDiagnosticEvent(values: boolean[]): string {
 
 function buildTransactionResultXdr(feeCharged = "100"): string {
   const result = xdr.TransactionResultResult.txSuccess([]);
-  const ext = new xdr.TransactionResultExt(0);
+  const ext = xdr.TransactionResultExt.v0();
   const tr = new xdr.TransactionResult({
     feeCharged: xdr.Int64.fromString(feeCharged),
     result,
@@ -79,7 +79,7 @@ function buildSuccessStub(returnValues: boolean[], capturedArgs: { args?: xdr.Sc
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     prepareTransaction: async (tx: any) => {
       const op = tx.operations[0];
-      capturedArgs.args = op.func.invokeContract().args();
+      capturedArgs.args = op.func.invokeContract.args;
       return tx;
     },
     sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
@@ -127,8 +127,8 @@ test("verifyBatchOnChain passes caller and one vec argument to verify_batch", as
       const callerAddress = stellarSdk.Address.fromScVal(captured.args![0]);
       assert.equal(callerAddress.toString(), STUB_KEYPAIR.publicKey());
 
-      assert.equal(captured.args![1].switch().name, "scvVec");
-      assert.equal(captured.args![1].vec()!.length, DEFAULT_OPTS.items.length);
+      assert.equal(captured.args![1].type, "scvVec");
+      assert.equal(captured.args![1].vec!.length, DEFAULT_OPTS.items.length);
     }
   );
 });

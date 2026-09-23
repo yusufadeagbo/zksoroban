@@ -87,7 +87,7 @@ function makeRegistryBatchItemScVal(circuitId: number, calldata: SorobanProofCal
 }
 
 function feeFromResult(result: xdr.TransactionResult): string {
-  return result.feeCharged().toString();
+  return result.feeCharged.toString();
 }
 
 // Maps contracts/verifier's `Error` enum (#[contracterror], repr(u32)) to a
@@ -139,15 +139,15 @@ function decodeReturnValueFromDiagnostics(
   }
 
   for (const event of diagnosticEventsXdr) {
-    const contractEvent = event.event();
-    const topics = contractEvent.body().v0().topics();
+    const contractEvent = event.event;
+    const topics = contractEvent.body.v0.topics;
     if (topics.length < 2) {
       continue;
     }
 
     const marker = scValToNative(topics[0]);
     if (marker === "fn_return") {
-      return Boolean(scValToNative(contractEvent.body().v0().data()));
+      return Boolean(scValToNative(contractEvent.body.v0.data));
     }
   }
 
@@ -184,15 +184,15 @@ function decodeBoolArrayFromDiagnostics(
 
   for (const encoded of diagnosticEventsXdr) {
     const event = xdr.DiagnosticEvent.fromXDR(encoded, "base64");
-    const contractEvent = event.event();
-    const topics = contractEvent.body().v0().topics();
+    const contractEvent = event.event;
+    const topics = contractEvent.body.v0.topics;
     if (topics.length < 2) {
       continue;
     }
 
     const marker = scValToNative(topics[0]);
     if (marker === "fn_return") {
-      const native = scValToNative(contractEvent.body().v0().data());
+      const native = scValToNative(contractEvent.body.v0.data);
       return Array.isArray(native) ? native.map(Boolean) : undefined;
     }
   }
