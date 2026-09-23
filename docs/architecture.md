@@ -85,10 +85,83 @@ Public API:
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
 - `getContractConfig(opts): Promise<ContractConfig>`
+- `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
 
 The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at call time.
+
+### Retry & Exponential Backoff
+
+Every RPC-touching call (`verifyOnChain`, `verifyBatchOnChain`,
+`verifyViaRegistry`, `verifyBatchViaRegistry`, `estimateVerifyFee`,
+`getContractConfig`, `getContractVersion`) can hit a flaky endpoint: a
+public Testnet RPC that rate-limits, a load balancer that drops idle
+connections, a node restart mid-request. Pass an optional `retry` policy
+to turn on per-request retries with exponential backoff:
+
+```ts
+import { verifyViaRegistry } from "@zksoroban/sdk";
+
+const verified = await verifyViaRegistry({
+  rpcUrl,
+  registryContractId,
+  circuitId,
+  bundle,
+  retry: {
+    maxRetries: 3,      // attempts after the initial one
+    baseDelayMs: 500,   // first backoff step, doubles each retry
+    maxDelayMs: 8_000,  // hard ceiling on any single delay
+    jitter: true,       // spread delays over [0, delay] to avoid stampedes
+    onRetry: (info) => console.warn(`retrying ${info.label} #${info.attempt} in ${info.delayMs}ms`),
+  },
+});
+```
+
+Omitting `retry` keeps the historical behavior — exactly one attempt —
+so enabling it is always an explicit choice.
+
+Key properties:
+
+- **What is retried**: only the *read-only* transport requests —
+  `getNetwork`, `getAccount`, `simulateTransaction`, and
+  `prepareTransaction` — are individually wrapped. These are safe to
+  replay: they mutate nothing on-chain and cost nothing.
+- **What is never retried**: `sendTransaction` is deliberately left
+  unwrapped, because a signed submission is not idempotent — if the first
+  attempt actually reached the network, replaying the same signed
+  transaction could charge its fee and apply its effects twice. (Soroban
+  does treat a resubmitted identical transaction as DUPLICATE for a while,
+  but we don't rely on that window being present or long enough.) The
+  transaction-confirmation loop (`getTransaction` polling) is likewise
+  never retried by this layer; it already handles NOT_FOUND by polling.
+- **What counts as transient**: error-message classification, mirroring
+  the SDK's typed-error mapping — network/fetch/timeout strings, node
+  error codes (ECONNREFUSED, ETIMEDOUT, …), HTTP 429/5xx, and rate-limit
+  responses. Contract-level rejections (`Error(Contract, #N)`),
+  malformed-input errors, auth failures, and `Account not found` are
+  *permanent*: retrying cannot change the outcome, so they surface
+  immediately. An unrecognized failure on a read-only request defaults to
+  transient — replaying a pure read can only delay an answer, never
+  duplicate one.
+- **`Account not found` is permanent on purpose**: `verifyViaRegistry`,
+  `verifyBatchViaRegistry`, and `getContractConfig` look up a throw-away
+  ephemeral account and fall back to a synthetic `Account` at sequence 0
+  when it isn't funded (the expected path). Retrying that lookup would
+  stall every registry call for the full backoff curve before falling
+  back anyway, so the classifier surfaces it immediately and the fallback
+  stays latency-free.
+- **Backoff curve**: `baseDelayMs * 2^(attempt-1)` capped at
+  `maxDelayMs`. With `jitter: true` (the default) each delay is drawn
+  uniformly from `[0, capped]` — full jitter — so many concurrent callers
+  failing on the same endpoint don't retry in lockstep and stampede it
+  again. Defaults: 3 retries, 500ms base, 8s cap, jitter on.
+- **Observability**: `onRetry` fires once per *scheduled* retry, just
+  before the sleep — never for permanent failures or exhausted retries,
+  which throw to the caller instead.
+- **Scope**: transport-only. The retry layer mediates individual RPC
+  requests; it never re-runs a call's own logic (calldata validation,
+  result decoding, typed-error mapping all happen exactly once).
 
 ## Contract Layer
 

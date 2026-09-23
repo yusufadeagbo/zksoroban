@@ -1,12 +1,20 @@
 import { Account, Contract, Keypair, TransactionBuilder, rpc, scValToNative } from "@stellar/stellar-sdk";
 
-import { SorobanZkError, SorobanZkErrorCode } from "./types.js";
+import { withRetry } from "./retry.js";
+import { RetryOptions, SorobanZkError, SorobanZkErrorCode } from "./types.js";
 
 const EXPECTED_CONTRACT_VERSION = "0.1.0";
 
-export async function getContractVersion(contractId: string, rpcUrl: string): Promise<string> {
+export async function getContractVersion(
+  contractId: string,
+  rpcUrl: string,
+  retry?: RetryOptions
+): Promise<string> {
   try {
-    const server = new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith("http://") });
+    const server = withRetry(
+      new rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith("http://") }),
+      retry
+    );
     const network = await server.getNetwork();
 
     const sourceAccount = new Account(Keypair.random().publicKey(), "0");
