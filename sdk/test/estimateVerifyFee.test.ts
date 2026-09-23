@@ -51,7 +51,7 @@ function buildStub(simResult: object, capturedArgs: { args?: xdr.ScVal[] } = {})
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     simulateTransaction: async (tx: any) => {
       const op = tx.operations[0];
-      capturedArgs.args = op.func.invokeContract().args();
+      capturedArgs.args = op.func.invokeContract.args;
       return simResult;
     }
   };

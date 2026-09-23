@@ -36,11 +36,11 @@ function buildFnReturnDiagnosticEvent(value: boolean): xdr.DiagnosticEvent {
     topics: [xdr.ScVal.scvSymbol("fn_return"), xdr.ScVal.scvSymbol("verify_proof")],
     data: xdr.ScVal.scvBool(value)
   });
-  const body = new xdr.ContractEventBody(0, v0);
+  const body = xdr.ContractEventBody.v0(v0);
   const event = new xdr.ContractEvent({
-    ext: new xdr.ExtensionPoint(0),
+    ext: xdr.ExtensionPoint.v0(),
     contractId: null,
-    type: xdr.ContractEventType.contract(),
+    type: xdr.ContractEventType.contract,
     body
   });
   return new xdr.DiagnosticEvent({
@@ -51,7 +51,7 @@ function buildFnReturnDiagnosticEvent(value: boolean): xdr.DiagnosticEvent {
 
 function buildTransactionResult(feeCharged = "100"): xdr.TransactionResult {
   const result = xdr.TransactionResultResult.txSuccess([]);
-  const ext = new xdr.TransactionResultExt(0);
+  const ext = xdr.TransactionResultExt.v0();
   return new xdr.TransactionResult({
     feeCharged: xdr.Int64.fromString(feeCharged),
     result,
@@ -80,7 +80,7 @@ function buildSuccessStub(
     getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
     prepareTransaction: async (tx: any) => {
       const op = tx.operations[0];
-      capturedArgs.args = op.func.invokeContract().args();
+      capturedArgs.args = op.func.invokeContract.args;
       return tx;
     },
     sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),

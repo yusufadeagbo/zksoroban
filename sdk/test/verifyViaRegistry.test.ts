@@ -52,7 +52,7 @@ function buildStub(simResult: object, capturedArgs: { args?: xdr.ScVal[] } = {})
     },
     simulateTransaction: async (tx: any) => {
       const op = tx.operations[0];
-      capturedArgs.args = op.func.invokeContract().args();
+      capturedArgs.args = op.func.invokeContract.args;
       return simResult;
     }
   };
@@ -100,7 +100,7 @@ test("verifyViaRegistry passes circuitId as the first verify_proof argument", as
 
       assert.ok(captured.args, "simulateTransaction should have been called");
       assert.equal(captured.args!.length, 5, "verify_proof(id, ...) takes 5 args");
-      assert.equal(captured.args![0].u32(), DEFAULT_OPTS.circuitId);
+      assert.equal(captured.args![0].u32, DEFAULT_OPTS.circuitId);
     }
   );
 });
