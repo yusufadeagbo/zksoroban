@@ -18,7 +18,7 @@
     "snarkjs": "^0.7.5"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
+    "@types/node": "^26.6.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
   }
