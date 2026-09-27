@@ -3,7 +3,7 @@
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
-    vec, Address, Bytes, BytesN, Env, String, TryFromVal, Vec,
+    vec, Address, Bytes, BytesN, Env, String, Vec,
 };
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
@@ -426,9 +426,9 @@ fn verify_one(env: &Env, caller: &Address, item: &ProofItem) -> Result<bool, Err
         .temporary()
         .extend_ttl(&count_key, limits.window_size, limits.window_size);
 
-    let proof_a = read_g1(env, &item.proof_a, "proof_a");
-    let proof_b = read_g2(env, &item.proof_b, "proof_b");
-    let proof_c = read_g1(env, &item.proof_c, "proof_c");
+    let proof_a = read_g1(&item.proof_a, "proof_a");
+    let proof_b = read_g2(&item.proof_b, "proof_b");
+    let proof_c = read_g1(&item.proof_c, "proof_c");
 
     if item.public_inputs.len() != EXPECTED_PUBLIC_INPUT_COUNT {
         return Ok(false);
@@ -530,17 +530,23 @@ fn read_expiry_ledger(bytes: &BytesN<32>) -> Option<u32> {
     Some(u32::from_be_bytes([arr[28], arr[29], arr[30], arr[31]]))
 }
 
-fn read_g1(env: &Env, bytes: &Bytes, label: &str) -> Bn254G1Affine {
-    assert_eq!(bytes.len(), PROOF_A_LEN as u32, "{label} must be 64 bytes");
-    let bytesn = BytesN::<PROOF_A_LEN>::try_from_val(env, bytes.as_val())
-        .expect("proof bytes must be convertible to BytesN<64>");
+/// Converts to `BytesN<64>` via a single length check (`Bytes::try_into`),
+/// instead of a manual `assert_eq!` on `.len()` followed by
+/// `BytesN::try_from_val`'s own internal length check — the latter path
+/// round-trips through `Val`/`BytesObject` and validates the length twice
+/// for the same bytes.
+fn read_g1(bytes: &Bytes, label: &str) -> Bn254G1Affine {
+    let bytesn: BytesN<PROOF_A_LEN> = bytes
+        .try_into()
+        .unwrap_or_else(|_| panic!("{label} must be {PROOF_A_LEN} bytes"));
     Bn254G1Affine::from_bytes(bytesn)
 }
 
-fn read_g2(env: &Env, bytes: &Bytes, label: &str) -> Bn254G2Affine {
-    assert_eq!(bytes.len(), PROOF_B_LEN as u32, "{label} must be 128 bytes");
-    let bytesn = BytesN::<PROOF_B_LEN>::try_from_val(env, bytes.as_val())
-        .expect("proof bytes must be convertible to BytesN<128>");
+/// See `read_g1` — same single-length-check conversion, for G2 points.
+fn read_g2(bytes: &Bytes, label: &str) -> Bn254G2Affine {
+    let bytesn: BytesN<PROOF_B_LEN> = bytes
+        .try_into()
+        .unwrap_or_else(|_| panic!("{label} must be {PROOF_B_LEN} bytes"));
     Bn254G2Affine::from_bytes(bytesn)
 }
 
