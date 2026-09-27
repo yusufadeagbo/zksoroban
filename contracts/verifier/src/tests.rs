@@ -5,6 +5,7 @@ use soroban_sdk::testutils::storage::Instance as _;
 use soroban_sdk::testutils::storage::Temporary as _;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
 use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Event as _, IntoVal, String, Vec};
+use zksoroban_verifier_interface::VerifierClient;
 
 const VK_ALPHA_G1: [u8; 64] = [
     37, 174, 162, 190, 147, 137, 161, 46, 208, 40, 205, 226, 35, 65, 40, 44, 27, 28, 154, 20, 14,
@@ -160,6 +161,32 @@ fn verify_proof_returns_true_for_valid_unexpired_proof() {
     let caller = Address::generate(&env);
 
     assert!(call_with_expiry(&env, &client, &caller, 1000));
+}
+
+/// Proves `zksoroban-verifier-interface`'s published `VerifierClient` — the
+/// cross-contract interface published for zksoroban#64, generated from
+/// `VerifierInterface` rather than from `VerifierContractClient`'s own
+/// `#[contractimpl]`-generated client above — actually interoperates with
+/// this real, deployed-shape contract and a real proof, not just a
+/// structurally-matching stand-in. This is the same setup and fixture
+/// `verify_proof_returns_true_for_valid_unexpired_proof` above uses, just
+/// invoked through the published interface's client instead.
+#[test]
+fn published_verifier_client_interoperates_with_the_real_contract() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    let interface_client = VerifierClient::new(&env, &client.address);
+    let verified = interface_client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, 1000),
+    );
+
+    assert!(verified);
 }
 
 #[test]

@@ -472,6 +472,104 @@ registered there. Pointed at a registry instance that has the other three
 circuits registered (`SOROBAN_TEST_REGISTRY_CONTRACT_ID`), it asserts
 every result is `true` instead.
 
+## Cross-Contract Interface
+
+Before this, an application contract that wanted to call `verify_proof`
+from its own Soroban code had to hand-write the cross-contract invocation
+itself — the argument encoding, the function-name symbol, and typing the
+return value — with nothing to check any of that against the real
+deployed contract at compile time.
+[`contracts/verifier-interface`](../contracts/verifier-interface) is a
+small, dependency-light crate published for exactly this: it defines a
+`VerifierInterface` trait with one method,
+`verify_proof(caller, proof_a, proof_b, proof_c, public_inputs) ->
+Result<bool, Error>`, matching `contracts/verifier`'s real exported
+function name and signature exactly — cross-contract calls dispatch by
+function-name symbol, so this can't be a shorter/friendlier name without
+breaking every call it makes against the actually-deployed contract.
+
+`#[contractclient(name = "VerifierClient")]` on that trait generates a
+`VerifierClient` type: `VerifierClient::new(&env, &verifier_contract_id)`,
+then `.verify_proof(&caller, &proof_a, &proof_b, &proof_c,
+&public_inputs)` to invoke it, and `.try_verify_proof(...)` if the caller
+wants the callee's `Result` instead of a panic on `Err`. This is the same
+codegen path `#[contractimpl]` already uses to build every contract's own
+auto-generated client (e.g. `VerifierContractClient` in
+`contracts/verifier`'s own tests) — `verifier-interface` just publishes
+that generated client under a name and version anyone can depend on,
+without depending on `contracts/verifier`'s whole implementation crate
+(which is `cdylib`-only and not meant to be linked as a library anyway).
+
+`contracts/verifier` itself now implements this trait —
+`impl VerifierInterface for VerifierContract` replaces what used to be a
+plain inherent `pub fn verify_proof`, with an identical body and, per
+`stellar contract info interface`, an identical exported spec entry. This
+was checked, not assumed: every existing unit test in
+`contracts/verifier/src/tests.rs` (58 of them, including the ones calling
+`verify_proof` directly through its own auto-generated client) passed
+unmodified after the change.
+
+`verifier-interface` mirrors `contracts/verifier`'s `Error` enum's
+variants and discriminants rather than depending on that crate for it (a
+downstream contract that only wants the interface, not the whole
+implementation, still gets a correctly-decoding error type) — a
+cross-contract call decodes the callee's error purely by its numeric
+`#[contracterror]` code, not by Rust type identity, so an independently
+defined enum with matching discriminants decodes a real rejection
+correctly. `contracts/verifier` itself, however, has a real dependency
+edge on `verifier-interface` already, so it reuses that same `Error` type
+directly rather than keeping its own copy in sync by hand.
+
+### Example: `contracts/examples/proof-gate`
+
+[`contracts/examples/proof-gate`](../contracts/examples/proof-gate) is a
+minimal contract built entirely around this pattern — its one function,
+`check(verifier, caller, proof_a, proof_b, proof_c, public_inputs) ->
+bool`, does nothing but:
+
+```rust
+VerifierClient::new(&env, &verifier).verify_proof(
+    &caller, &proof_a, &proof_b, &proof_c, &public_inputs,
+)
+```
+
+Two things worth knowing before writing your own version of this:
+
+- **`caller` still has to be authorized for the *nested* call, not just
+  the outer one.** `check`'s own caller doesn't automatically inherit
+  authorization for `verify_proof`'s `caller.require_auth()` one level
+  down — a real signed transaction's authorization tree has to cover both
+  invocations (this is exactly what
+  `cross_contract_call_still_requires_the_callers_auth` in this crate's
+  test suite asserts: calling `check` with no authorization set up at all
+  panics, the same way calling `verify_proof` directly would).
+- **In tests, `env.mock_all_auths()` alone isn't enough.** It only
+  auto-authorizes `require_auth()` calls made by the directly-invoked
+  (root) contract; `verify_proof`'s `require_auth()` runs one level
+  deeper, inside the cross-contract call `check` makes, so it needs
+  `env.mock_all_auths_allowing_non_root_auth()` instead — otherwise the
+  whole call fails with `Error(Auth, InvalidAction)` even for a
+  perfectly-valid `caller`. This tripped up this example's own first
+  draft; see the comment above it in
+  `contracts/examples/proof-gate/src/tests.rs`.
+
+The example's own tests run against a trivial in-crate `FakeVerifier` (an
+independent `impl VerifierInterface for FakeVerifier` with a fixed rule
+instead of real Groth16 verification), not the real
+`contracts/verifier` — proving the cross-contract dispatch, argument
+encoding, and auth propagation work, without needing real proof/circuit
+fixtures duplicated into yet another crate. What proves the published
+`VerifierClient` actually interoperates with the *real* contract and a
+*real* proof is a separate test back in
+`contracts/verifier/src/tests.rs`:
+`published_verifier_client_interoperates_with_the_real_contract` deploys
+the real `VerifierContract`, then calls it through
+`zksoroban_verifier_interface::VerifierClient` (rather than through
+`VerifierContractClient`, the crate's own `#[contractimpl]`-generated
+client used everywhere else in that file) with the same
+`poseidon_preimage` fixture the rest of the suite uses, and asserts it
+comes back `true`.
+
 ## Admin Ownership & Contract Upgrades
 
 Both `contracts/verifier` and `contracts/registry` share the same

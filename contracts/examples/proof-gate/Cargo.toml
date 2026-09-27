@@ -1,15 +1,16 @@
 [package]
-name = "zksoroban-verifier"
+name = "zksoroban-example-proof-gate"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Example contract calling contracts/verifier cross-contract via VerifierClient (zksoroban#64)"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 soroban-sdk = "27.0.0"
-zksoroban-verifier-interface = { path = "../verifier-interface" }
+zksoroban-verifier-interface = { path = "../../verifier-interface" }
 
 [dev-dependencies]
 soroban-sdk = { version = "27.0.0", features = ["testutils"] }

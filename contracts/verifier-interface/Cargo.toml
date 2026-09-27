@@ -1,0 +1,15 @@
+[package]
+name = "zksoroban-verifier-interface"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "VerifierClient interface trait for cross-contract calls into contracts/verifier"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+soroban-sdk = "27.0.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "27.0.0", features = ["testutils"] }

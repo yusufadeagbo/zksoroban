@@ -1,10 +1,11 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype,
+    contract, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, String, Vec,
 };
+use zksoroban_verifier_interface::{Error, VerifierInterface};
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
 const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
@@ -62,19 +63,6 @@ enum DataKey {
     AllowlistEnabled,
     Allowlist(Address),
     VerificationCount(BytesN<32>),
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum Error {
-    NotInitialized = 1,
-    RateLimitExceeded = 2,
-    InvalidWindowSize = 3,
-    ProofExpired = 4,
-    CallerNotAllowed = 5,
-    InvalidVerifyingKey = 6,
-    NoPendingAdmin = 7,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -318,34 +306,6 @@ impl VerifierContract {
         Ok(())
     }
 
-    pub fn verify_proof(
-        env: Env,
-        caller: Address,
-        proof_a: Bytes,
-        proof_b: Bytes,
-        proof_c: Bytes,
-        public_inputs: Vec<BytesN<32>>,
-    ) -> Result<bool, Error> {
-        caller.require_auth();
-
-        let item = ProofItem {
-            proof_a,
-            proof_b,
-            proof_c,
-            public_inputs,
-        };
-        let result = verify_one(&env, &caller, &item);
-
-        // Same rule as before: only publish on an Ok(...) outcome. An Err(...)
-        // here rolls back the whole call (see the note on publish_verification_result),
-        // so publishing first would be a silent no-op.
-        if let Ok(success) = result {
-            publish_verification_result(&env, &caller, success, &item.public_inputs);
-        }
-
-        result
-    }
-
     /// Verify a batch of proofs from one caller in a single call. Each proof
     /// is still subject to its own allowlist/rate-limit/expiry check, applied
     /// in order — an earlier proof in the batch that consumes rate-limit
@@ -382,6 +342,42 @@ impl VerifierContract {
         }
 
         Ok(results)
+    }
+}
+
+/// Published as `zksoroban-verifier-interface`'s `VerifierInterface` trait
+/// so another Soroban contract can call `verify_proof` through the
+/// generated `VerifierClient` instead of hand-writing the cross-contract
+/// invocation — see `docs/architecture.md`'s "Cross-Contract Interface"
+/// section and `contracts/examples/proof-gate`.
+#[contractimpl]
+impl VerifierInterface for VerifierContract {
+    fn verify_proof(
+        env: Env,
+        caller: Address,
+        proof_a: Bytes,
+        proof_b: Bytes,
+        proof_c: Bytes,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        caller.require_auth();
+
+        let item = ProofItem {
+            proof_a,
+            proof_b,
+            proof_c,
+            public_inputs,
+        };
+        let result = verify_one(&env, &caller, &item);
+
+        // Same rule as before: only publish on an Ok(...) outcome. An Err(...)
+        // here rolls back the whole call (see the note on publish_verification_result),
+        // so publishing first would be a silent no-op.
+        if let Ok(success) = result {
+            publish_verification_result(&env, &caller, success, &item.public_inputs);
+        }
+
+        result
     }
 }
 

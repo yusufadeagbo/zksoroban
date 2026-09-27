@@ -31,8 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --manifest-path contracts/verifier-interface/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/verifier/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/registry/Cargo.toml --locked
+      - run: cargo test --manifest-path contracts/examples/proof-gate/Cargo.toml --locked
 
   circuits:
     runs-on: ubuntu-latest
