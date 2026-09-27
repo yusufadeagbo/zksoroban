@@ -2,15 +2,102 @@
 
 This document describes how `zksoroban` tracks versions, milestones, and sprint work.
 
+Every notable change is recorded in [CHANGELOG.md](../CHANGELOG.md) as it
+lands on `main`, under an `[Unreleased]` heading until a release actually
+ships.
+
 ## Semantic Versioning
 
-The SDK and contracts follow [Semantic Versioning](https://semver.org):
+The SDK and contracts each follow [Semantic Versioning](https://semver.org),
+but "breaking" means something different for a published npm package than
+for a contract instance that's already live on a network — see the two
+subsections below.
 
-- **MAJOR** for breaking API or proof-format changes.
-- **MINOR** for backward-compatible features.
-- **PATCH** for backward-compatible fixes.
+### SDK (`sdk/package.json`)
 
-The current SDK version is tracked in `sdk/package.json`.
+The SDK's version is a normal npm semver: consumers pin a version range and
+choose when to upgrade, and an old version stays installable forever.
+
+- **MAJOR** — anything that breaks a consumer who doesn't change their own
+  code: removing or renaming an export, changing a function's parameter or
+  return shape, changing what a function throws, or changing the on-the-wire
+  byte encoding `formatProof`/`formatVerifyingKey` produce.
+- **MINOR** — backward-compatible additions: a new exported function, a new
+  optional field on an existing options object, support for a new circuit
+  shape, a new `SorobanZkErrorCode` variant.
+- **PATCH** — backward-compatible fixes: a bug fix that doesn't change any
+  documented input/output shape, a dependency bump that doesn't change the
+  SDK's own public behavior, a documentation or type-annotation correction.
+
+### Contracts (`contracts/verifier`, `contracts/registry`)
+
+A contract can't be "rolled back" the way an npm version can — once
+`verify_proof` or `register_circuit` has a given interface deployed at a
+given contract ID, every existing integration is already calling it that
+way, and `upgrade()` (see below) replaces that same contract ID's logic for
+everyone at once rather than letting each caller opt in on their own
+schedule. So the bar for what counts as a breaking (MAJOR) contract change
+is stricter than for the SDK:
+
+- **MAJOR** — anything that would make an existing, unmodified caller's
+  transaction fail or behave differently: a changed function signature,
+  changed argument order or types, a removed function, a changed error
+  code's meaning, or a storage layout change that isn't handled by
+  `upgrade`'s migration path.
+- **MINOR** — a new function, a new optional read-only getter, or a new
+  circuit registered with `contracts/registry` — anything an existing
+  caller's transactions are unaffected by if they never call the new
+  surface.
+- **PATCH** — an internal fix that doesn't change any function's interface
+  or observable behavior for a well-formed call: e.g. a storage-cost
+  optimization (see the `CallCount` rate-limit entries moving to temporary
+  storage) or a fix for a bug that only ever caused a transaction to fail
+  in a way it was already documented to fail.
+
+Both contracts expose their own version via a `version()` contract call,
+sourced from that contract's `Cargo.toml` (`env!("CARGO_PKG_VERSION")`) —
+see `contracts/verifier/src/lib.rs` and `contracts/registry/src/lib.rs`.
+
+## Contract deployments are versioned separately from the SDK package
+
+`sdk/package.json`'s version and each contract's `Cargo.toml` version are
+independent numbers that do not need to move together:
+
+- The SDK version describes the *npm package* — the TypeScript code a
+  consumer installs.
+- A contract's version describes the *wasm currently deployed* at a
+  specific contract ID on a specific network (e.g. the Testnet registry at
+  `CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH`, see the
+  README). Deploying a new contract version means calling `upgrade()` on
+  that existing contract ID (via the two-step admin transfer/`upgrade`
+  flow in `contracts/verifier`/`contracts/registry`) or deploying an
+  entirely new contract ID — neither of which involves `npm publish` at
+  all.
+
+Because these two version numbers can drift, the SDK ships an
+`EXPECTED_CONTRACT_VERSION` constant (`sdk/src/version.ts`) and a
+`getContractVersion()` call: it warns at runtime if the contract you've
+pointed the SDK at reports a different version than the one that SDK build
+was written against, so a mismatch surfaces as a warning instead of a
+silent behavior difference.
+
+## Pre-1.0 Stability (current: 0.1.0)
+
+`sdk/package.json` is at `0.1.0`, and per semver's own rules, everything
+before `1.0.0` is exempt from the MAJOR/MINOR/PATCH guarantees above —
+semver §4 permits breaking changes in *any* `0.x` release, including a
+patch release. In practice, for this project:
+
+- Expect the exported API, error codes, and calldata encoding to still
+  change based on integration feedback.
+- A breaking change during `0.x` will still be called out as `### Changed`
+  (or `### Removed`) in [CHANGELOG.md](../CHANGELOG.md) and will still bump
+  the minor version (`0.1.0` → `0.2.0`), even though semver doesn't
+  strictly require that below `1.0.0` — this project chooses to signal
+  breakage with a minor bump anyway rather than relying on patch releases
+  being safe to auto-upgrade.
+- `1.0.0` is the commitment point: once cut, the MAJOR/MINOR/PATCH policy
+  above is treated as a hard guarantee rather than a best-effort intention.
 
 ## Releasing the SDK
 
