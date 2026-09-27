@@ -5,6 +5,7 @@ import readline from "node:readline";
 import {
   SnarkjsProof,
   ZkInputError,
+  diffProofs,
   formatProof,
   poseidon,
   verifyViaRegistry
@@ -189,13 +190,25 @@ async function main(): Promise<void> {
   );
   log("expected: verified = false (the pairing check rejects it, nothing throws)", "verbose");
   const wrongCommitment = poseidon([answers.secret + 1n]);
+  const wrongPublicSignals = [wrongCommitment.toString()];
   await verifyAndReport({
     proof,
-    publicSignals: [wrongCommitment.toString()],
+    publicSignals: wrongPublicSignals,
     rpcUrl: answers.rpcUrl,
     contractId: answers.contractId,
     log
   });
+
+  log("diffProofs: comparing the valid calldata against the wrong-public-input calldata", "normal");
+  const diff = diffProofs(formatProof(proof, publicSignals), formatProof(proof, wrongPublicSignals));
+  if (diff.equal) {
+    console.log("  (unexpected: no differences found)");
+  } else {
+    for (const d of diff.differences) {
+      console.log(`  ${d.field}: expected ${d.expectedHex}`);
+      console.log(`  ${" ".repeat(d.field.length)}  actual   ${d.actualHex} (first differing byte: ${d.firstDifferentByte})`);
+    }
+  }
 
   console.log("\n=== Scenario 3: failure — malformed public input ===");
   log("a public input at or beyond the BN254 field modulus is rejected before any network call", "normal");
