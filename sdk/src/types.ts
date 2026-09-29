@@ -1,5 +1,17 @@
 import { Keypair } from "@stellar/stellar-sdk";
 
+export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+export interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  component: string;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export type LogHandler = (entry: LogEntry) => void;
+
 export interface SnarkjsProof {
   pi_a: [string, string, string];
   pi_b: [[string, string], [string, string], [string, string]];
@@ -114,6 +126,11 @@ export interface VerifyOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 export interface VerifyResult {
@@ -143,6 +160,11 @@ export interface VerifyViaRegistryOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -177,6 +199,11 @@ export interface VerifyBatchOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -218,6 +245,11 @@ export interface VerifyBatchViaRegistryOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 export enum SorobanZkErrorCode {
