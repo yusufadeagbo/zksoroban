@@ -12,6 +12,18 @@ import {
   VALID_SNARKJS_PROOF
 } from "./fixtures";
 
+const VALID_VK = {
+  protocol: "groth16",
+  curve: "bn254",
+  nPublic: 1,
+  vk_alpha_1: ["1", "2", "1"],
+  vk_beta_2: [["3", "4"], ["5", "6"], ["7", "8"]],
+  vk_gamma_2: [["9", "10"], ["11", "12"], ["13", "14"]],
+  vk_delta_2: [["15", "16"], ["17", "18"], ["19", "20"]],
+  vk_alphabeta_12: [],
+  IC: [["21", "22", "1"]]
+};
+
 test("formatProof produces the expected calldata lengths", () => {
   const result = formatProof(VALID_SNARKJS_PROOF, VALID_PUBLIC_SIGNALS);
 
@@ -108,18 +120,6 @@ test("error message includes out-of-range value truncated at 64 chars", () => {
       error.message.includes("…")
   );
 });
-
-const VALID_VK = {
-  protocol: "groth16",
-  curve: "bn254",
-  nPublic: 1,
-  vk_alpha_1: ["1", "2", "1"],
-  vk_beta_2: [["3", "4"], ["5", "6"], ["7", "8"]],
-  vk_gamma_2: [["9", "10"], ["11", "12"], ["13", "14"]],
-  vk_delta_2: [["15", "16"], ["17", "18"], ["19", "20"]],
-  vk_alphabeta_12: [],
-  IC: [["21", "22", "1"]]
-};
 
 test("formatProof validates public signal count when vk is provided", () => {
   assert.throws(

@@ -125,6 +125,22 @@ Known gaps, tracked as open issues rather than left implicit:
 - `contracts/verifier` (the original single-circuit contract) is still live at
   `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`, but predates rate-limiting, caller auth, and expiry, and is no longer what `demo/` targets.
 
+## Benchmarks
+
+Run `scripts/bench-verify.sh [N]` to submit N proofs against a Testnet
+`contracts/verifier` deployment and collect per-call fee and latency. The
+script writes `bench-results.csv` and prints a summary table (min, median,
+p95, max) to stdout.
+
+```sh
+SOROBAN_SECRET_KEY=... SOROBAN_VERIFIER_CONTRACT_ID=... \
+  ./scripts/bench-verify.sh 20
+```
+
+Requires a funded Testnet account and a deployed rate-limited
+`contracts/verifier` instance. The SDK is built automatically if `sdk/dist/`
+is missing.
+
 ## Notes
 
 - The setup artifacts in `circuits/poseidon_preimage/setup/` are testnet-only and non-production.
