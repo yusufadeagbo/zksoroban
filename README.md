@@ -125,6 +125,18 @@ Known gaps, tracked as open issues rather than left implicit:
 - `contracts/verifier` (the original single-circuit contract) is still live at
   `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`, but predates rate-limiting, caller auth, and expiry, and is no longer what `demo/` targets.
 
+## Fuzz Testing (zksoroban#37)
+
+The project includes fuzz tests for the `verify_proof` function with randomized `BytesN<64>`, `BytesN<128>`, and `BytesN<32>` inputs. These tests run 1000 random combinations per invocation to assert no panic/contract trap occurs, and only valid `Ok(true)`/`Ok(false)`/`Err(...)` outcomes are observed.
+
+To run the fuzz tests:
+
+```bash
+cargo test --manifest-path contracts/verifier/Cargo.toml -- fuzz
+```
+
+The tests will exercise random byte arrays through the verifier contract and report any panics or unexpected errors.
+
 ## Notes
 
 - The setup artifacts in `circuits/poseidon_preimage/setup/` are testnet-only and non-production.

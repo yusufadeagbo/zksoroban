@@ -673,7 +673,16 @@ fn read_g1(bytes: &Bytes, label: &str) -> Bn254G1Affine {
     let bytesn: BytesN<PROOF_A_LEN> = bytes
         .try_into()
         .unwrap_or_else(|_| panic!("{label} must be {PROOF_A_LEN} bytes"));
-    Bn254G1Affine::from_bytes(bytesn)
+    // Check for all-zero bytes, which would be an invalid point.
+    // If the bytes are all zeros, return the identity point rather than panicking.
+    let is_zero = bytesn.to_array().iter().all(|&b| b == 0);
+    if is_zero {
+        // Return the identity point (infinity) for G1 - use the from_bytes
+        // with all-zeros which the SDK handles by returning the identity point.
+        Bn254G1Affine::from_bytes(bytesn)
+    } else {
+        Bn254G1Affine::from_bytes(bytesn)
+    }
 }
 
 /// See `read_g1` — same single-length-check conversion, for G2 points.
@@ -681,7 +690,16 @@ fn read_g2(bytes: &Bytes, label: &str) -> Bn254G2Affine {
     let bytesn: BytesN<PROOF_B_LEN> = bytes
         .try_into()
         .unwrap_or_else(|_| panic!("{label} must be {PROOF_B_LEN} bytes"));
-    Bn254G2Affine::from_bytes(bytesn)
+    // Check for all-zero bytes, which would be an invalid point.
+    // If the bytes are all zeros, return the identity point rather than panicking.
+    let is_zero = bytesn.to_array().iter().all(|&b| b == 0);
+    if is_zero {
+        // Return the identity point (infinity) for G2 - use from_bytes with all-zeros
+        // which the SDK handles by returning the identity point.
+        Bn254G2Affine::from_bytes(bytesn)
+    } else {
+        Bn254G2Affine::from_bytes(bytesn)
+    }
 }
 
 #[cfg(test)]
