@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { SnarkjsProof, verifyBatchViaRegistry } from "@zksoroban/sdk";
+import { MAINNET, NetworkConfig, SnarkjsProof, TESTNET, verifyBatchViaRegistry } from "@zksoroban/sdk";
 
 // Same live deployment demo/src/run.ts targets — see
 // docs/architecture.md#verifying-key-registry. Only poseidon_preimage
@@ -10,9 +10,9 @@ import { SnarkjsProof, verifyBatchViaRegistry } from "@zksoroban/sdk";
 // not yet on the shared live deployment (registering there needs the
 // registry's admin key, a maintainer action — see docs/multi-circuit.md).
 const TESTNET_REGISTRY_CONTRACT_ID = "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH";
-const NETWORKS: Record<string, string> = {
-  testnet: "https://soroban-testnet.stellar.org",
-  mainnet: "https://mainnet.sorobanrpc.com"
+const NETWORKS: Record<string, NetworkConfig> = {
+  testnet: TESTNET,
+  mainnet: MAINNET
 };
 
 // Matches contracts/registry/src/tests.rs's own circuit ID scheme, so a
@@ -44,10 +44,10 @@ function loadFixture(circuit: string): FixtureProof {
 }
 
 async function main(): Promise<void> {
-  const network = (process.env.SOROBAN_NETWORK ?? "testnet").toLowerCase();
-  const rpcUrl = NETWORKS[network];
-  if (!rpcUrl) {
-    throw new Error(`Unknown SOROBAN_NETWORK "${network}". Expected "testnet" or "mainnet".`);
+  const networkName = (process.env.SOROBAN_NETWORK ?? "testnet").toLowerCase();
+  const networkPreset = NETWORKS[networkName];
+  if (!networkPreset) {
+    throw new Error(`Unknown SOROBAN_NETWORK "${networkName}". Expected "testnet" or "mainnet".`);
   }
 
   const registryContractId =
@@ -81,8 +81,7 @@ async function main(): Promise<void> {
   );
 
   const results = await verifyBatchViaRegistry({
-    rpcUrl,
-    registryContractId,
+    network: { ...networkPreset, contractId: registryContractId },
     items: [
       { circuitId: RANGE_PROOF_CIRCUIT_ID, ...rangeProof },
       { circuitId: THRESHOLD_2OF3_CIRCUIT_ID, ...threshold2of3 },
@@ -107,6 +106,12 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
+  // CodeQL's js/clear-text-logging flags this: a NetworkMismatchError's
+  // message can include a network passphrase (e.g. "Test SDF Network ;
+  // September 2015"). That's a public network identifier shipped in every
+  // Stellar SDK release, not a credential, so the alert is a false
+  // positive — dismissed on the relevant PR rather than suppressed inline,
+  // since CodeQL doesn't honor `codeql[rule-id]` comments for this query.
   console.error(error);
   process.exit(1);
 });
