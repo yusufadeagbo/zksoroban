@@ -1,4 +1,5 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import type { LogHandler } from "./logger.js";
 
 /**
  * Progress stages reported during proof generation and/or on-chain
@@ -224,6 +225,11 @@ export interface VerifyOptions {
    */
   retry?: RetryOptions;
   /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
+  /**
    * Optional progress callback (zksoroban#29). `verifyOnChain` emits
    * `submit_start` right before building the transaction and
    * `submit_done` once a final `verified`/`txHash`/`ledger`/`fee` result
@@ -262,6 +268,11 @@ export interface VerifyViaRegistryOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -295,6 +306,11 @@ export interface VerifyBatchOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -335,6 +351,11 @@ export interface VerifyBatchViaRegistryOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 export enum SorobanZkErrorCode {
