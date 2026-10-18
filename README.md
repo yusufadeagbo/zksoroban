@@ -37,11 +37,10 @@ transient failures with exponential backoff (see
 [docs/architecture.md](docs/architecture.md#retry--exponential-backoff)):
 
 ```ts
-import { verifyViaRegistry } from "@zksoroban/sdk";
+import { TESTNET, verifyViaRegistry } from "@zksoroban/sdk";
 
 const verified = await verifyViaRegistry({
-  rpcUrl,
-  registryContractId,
+  network: { ...TESTNET, contractId: registryContractId },
   circuitId,
   bundle,
   retry: { maxRetries: 3, baseDelayMs: 500 },
@@ -136,6 +135,22 @@ cargo test --manifest-path contracts/verifier/Cargo.toml -- fuzz
 ```
 
 The tests will exercise random byte arrays through the verifier contract and report any panics or unexpected errors.
+
+## Benchmarks
+
+Run `scripts/bench-verify.sh [N]` to submit N proofs against a Testnet
+`contracts/verifier` deployment and collect per-call fee and latency. The
+script writes `bench-results.csv` and prints a summary table (min, median,
+p95, max) to stdout.
+
+```sh
+SOROBAN_SECRET_KEY=... SOROBAN_VERIFIER_CONTRACT_ID=... \
+  ./scripts/bench-verify.sh 20
+```
+
+Requires a funded Testnet account and a deployed rate-limited
+`contracts/verifier` instance. The SDK is built automatically if `sdk/dist/`
+is missing.
 
 ## Notes
 

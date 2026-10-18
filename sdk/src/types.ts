@@ -1,4 +1,44 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import type { LogHandler } from "./logger.js";
+
+/**
+ * Progress stages reported during proof generation and/or on-chain
+ * submission (zksoroban#29). `generateProof` emits `witness_*`/`proof_*`
+ * around the two real, separately-timed stages `snarkjs.groth16.fullProve`
+ * normally combines into one opaque call; `verifyOnChain` emits `submit_*`
+ * around its own transaction build/submit/confirm cycle. Neither function
+ * emits stages it doesn't itself perform — an application that wants all
+ * six, in order, calls `generateProof` then `verifyOnChain` with the same
+ * `onProgress`, since generating a proof and submitting one are already two
+ * separate calls in this SDK, not one combined operation.
+ */
+export type ProofStage =
+  | "witness_start"
+  | "witness_done"
+  | "proof_start"
+  | "proof_done"
+  | "submit_start"
+  | "submit_done";
+
+export type OnProofProgress = (stage: ProofStage) => void;
+
+/**
+ * Invokes `onProgress` for `stage`, catching and discarding anything it
+ * throws — a progress callback's own bug or failure must never abort the
+ * operation it's just reporting on (an explicit zksoroban#29 requirement).
+ * A no-op if `onProgress` wasn't supplied.
+ */
+export function emitProofStage(onProgress: OnProofProgress | undefined, stage: ProofStage): void {
+  if (!onProgress) {
+    return;
+  }
+
+  try {
+    onProgress(stage);
+  } catch {
+    // Deliberately ignored — see this function's own doc comment.
+  }
+}
 
 export interface SnarkjsProof {
   pi_a: [string, string, string];
@@ -103,9 +143,79 @@ export interface RetryAttemptInfo {
   error: unknown;
 }
 
-export interface VerifyOptions {
+/**
+ * A network endpoint plus the one contract a call targets on it — the
+ * `rpcUrl`, `networkPassphrase`, and `contractId` that, before
+ * zksoroban#40, were scattered across separate string parameters on
+ * every SDK function and had to be kept in sync by hand across every
+ * call site. Every RPC-touching SDK function now takes a single
+ * `network: NetworkConfig` instead.
+ *
+ * `networkPassphrase` isn't just documentation — every function that
+ * takes a `NetworkConfig` still asks the RPC server for its own
+ * passphrase (`getNetwork()`, as it always has) and now also checks it
+ * against `network.networkPassphrase`, throwing {@link NetworkMismatchError}
+ * on a mismatch. This is exactly the class of mistake centralizing
+ * network config is meant to prevent — an `rpcUrl` pointed at one
+ * network with a `networkPassphrase`/`contractId` left over from
+ * another — caught before a transaction is ever built, not after it
+ * fails in some less obvious way downstream.
+ *
+ * Use {@link TESTNET}/{@link MAINNET}/{@link LOCAL} directly, or spread
+ * one with a different `contractId` when a call targets a different
+ * contract on the same network (e.g. `contracts/registry` instead of
+ * `contracts/verifier`): `{ ...TESTNET, contractId: REGISTRY_ID }`.
+ */
+export interface NetworkConfig {
   rpcUrl: string;
+  networkPassphrase: string;
   contractId: string;
+}
+
+/**
+ * `contracts/verifier`'s current Testnet deployment — see the root
+ * README's "Testnet Deployment" section. `soroban-testnet.stellar.org`
+ * is Stellar's own free, public Testnet RPC endpoint.
+ */
+export const TESTNET: NetworkConfig = {
+  rpcUrl: "https://soroban-testnet.stellar.org",
+  networkPassphrase: "Test SDF Network ; September 2015",
+  contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN"
+};
+
+/**
+ * Mainnet's network passphrase, for completeness — `rpcUrl` and
+ * `contractId` are deliberately left empty. Stellar does not operate a
+ * single free public Mainnet Soroban RPC endpoint the way it does for
+ * Testnet (real deployments use a self-hosted or third-party RPC
+ * provider), and no `zksoroban` contract is deployed to Mainnet: the
+ * reference circuit's trusted setup is explicitly testnet-only (see
+ * `docs/security-model.md`'s Trust Assumptions) and was never meant to
+ * secure anything of real value. Fill in both before use:
+ * `{ ...MAINNET, rpcUrl: "<your RPC provider>", contractId: "<your deployment>" }`.
+ */
+export const MAINNET: NetworkConfig = {
+  rpcUrl: "",
+  networkPassphrase: "Public Global Stellar Network ; September 2015",
+  contractId: ""
+};
+
+/**
+ * A local `stellar container start local` quickstart node — see
+ * `docs/performance.md`'s reproduction steps for the exact commands.
+ * `contractId` is deliberately empty: a local deployment's contract ID
+ * is generated fresh by `stellar contract deploy` and has no universal
+ * default. Fill it in after deploying:
+ * `{ ...LOCAL, contractId: "<your local deployment>" }`.
+ */
+export const LOCAL: NetworkConfig = {
+  rpcUrl: "http://localhost:8000/rpc",
+  networkPassphrase: "Standalone Network ; February 2017",
+  contractId: ""
+};
+
+export interface VerifyOptions {
+  network: NetworkConfig;
   keypair: Keypair;
   calldata?: SorobanProofCalldata;
   bundle?: ProofBundle;
@@ -114,6 +224,22 @@ export interface VerifyOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
+  /**
+   * Optional progress callback (zksoroban#29). `verifyOnChain` emits
+   * `submit_start` right before building the transaction and
+   * `submit_done` once a final `verified`/`txHash`/`ledger`/`fee` result
+   * is ready to return — the two stages this function actually performs.
+   * It does not emit `witness_*`/`proof_*`; those belong to
+   * {@link generateProof}, a separate call. Pass the same `onProgress` to
+   * both if an application wants all six stages, in order, across the
+   * two calls.
+   */
+  onProgress?: OnProofProgress;
 }
 
 export interface VerifyResult {
@@ -131,9 +257,8 @@ export interface VerifyResult {
  * call is simulation-only, exactly like {@link GetContractConfigOptions}.
  */
 export interface VerifyViaRegistryOptions {
-  rpcUrl: string;
-  /** Bech32m address of the deployed `contracts/registry` instance. */
-  registryContractId: string;
+  /** `network.contractId` here is `contracts/registry`'s address, not `contracts/verifier`'s. */
+  network: NetworkConfig;
   /** The `id` a circuit was registered under via `register_circuit`. */
   circuitId: number;
   calldata?: SorobanProofCalldata;
@@ -143,13 +268,18 @@ export interface VerifyViaRegistryOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
  * One proof in a {@link verifyBatchOnChain} call, targeting
  * `contracts/verifier`'s `verify_batch`. Same shape as a single
  * {@link VerifyOptions}'s proof inputs, minus the fields that are shared
- * across the whole batch (`rpcUrl`, `contractId`, `keypair`).
+ * across the whole batch (`network`, `keypair`).
  */
 export interface VerifierBatchItem {
   proof: SnarkjsProof;
@@ -168,8 +298,7 @@ export interface VerifierBatchItem {
  * expiry check.
  */
 export interface VerifyBatchOptions {
-  rpcUrl: string;
-  contractId: string;
+  network: NetworkConfig;
   keypair: Keypair;
   items: VerifierBatchItem[];
   /**
@@ -177,6 +306,11 @@ export interface VerifyBatchOptions {
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -209,15 +343,19 @@ export interface RegistryBatchItem {
  * call is simulation-only.
  */
 export interface VerifyBatchViaRegistryOptions {
-  rpcUrl: string;
-  /** Bech32m address of the deployed `contracts/registry` instance. */
-  registryContractId: string;
+  /** `network.contractId` here is `contracts/registry`'s address, not `contracts/verifier`'s. */
+  network: NetworkConfig;
   items: RegistryBatchItem[];
   /**
    * Optional retry policy for transient RPC failures. Omit for the
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 export enum SorobanZkErrorCode {
@@ -242,7 +380,13 @@ export enum SorobanZkErrorCode {
   // Witness/proof computation itself failed (e.g. a wasm/zkey mismatch, or an
   // input that doesn't satisfy the circuit's constraints) — distinct from
   // INVALID_PROOF_FORMAT, which is about a proof's on-the-wire shape.
-  PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED"
+  PROOF_GENERATION_FAILED = "PROOF_GENERATION_FAILED",
+  // deserializeProof (zksoroban#33) errors. Split from INVALID_PROOF_FORMAT
+  // so a caller can tell "this came from an incompatible SDK version" apart
+  // from "this data is just garbage/truncated" — a real, actionable
+  // difference for an application deciding how to react.
+  SERIALIZED_PROOF_VERSION_MISMATCH = "SERIALIZED_PROOF_VERSION_MISMATCH",
+  CORRUPTED_SERIALIZED_PROOF = "CORRUPTED_SERIALIZED_PROOF"
 }
 
 export class SorobanZkError extends Error {
@@ -265,9 +409,13 @@ export class ZkInputError extends SorobanZkError {
 }
 
 export class NetworkMismatchError extends SorobanZkError {
-  constructor(public expected: string, public actual: string) {
+  constructor(
+    public expected: string,
+    public actual: string,
+    subject = "This ProofBundle targets"
+  ) {
     super(
-      `ProofBundle targets network "${expected}" but the configured network is "${actual}"`,
+      `${subject} network "${expected}", but the configured network's RPC server reports "${actual}"`,
       SorobanZkErrorCode.NETWORK_MISMATCH
     );
     this.name = "NetworkMismatchError";

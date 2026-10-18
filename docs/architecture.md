@@ -74,22 +74,72 @@ The SDK has three responsibilities:
 - `proof.ts`: convert `snarkjs` proof JSON into the exact BN254 byte layout expected by the contract
 - `verify.ts`: build, submit, and decode the Soroban verifier transaction
 
+A fourth file, `browser.ts` (the separate `@zksoroban/sdk/browser` entry
+point — see below), generates the proof `proof.ts` then encodes:
+`generateProof` runs `snarkjs.groth16.fullProve`'s underlying WASM
+witness computation and Groth16 proving from in-memory `Uint8Array`
+bytes, with no filesystem access, so it works the same in a browser as
+in Node.
+
 Public API:
 
 - `poseidon(inputs: bigint[]): bigint`
 - `formatProof(proof, publicSignals): SorobanProofCalldata`
 - `formatVerifyingKey(vk): RegistryVerifyingKey`
+- `generateProof(secret, commitment, wasm, zkey, onProgress?): Promise<GenerateProofResult>` — `@zksoroban/sdk/browser` only (see below)
+- `serializeProof(proof, publicSignals): Uint8Array` / `deserializeProof(bytes): { proof, publicSignals }`
 - `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction
 - `verifyViaRegistry(opts): Promise<boolean>` — `contracts/registry`, simulation-only
 - `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
 - `getContractConfig(opts): Promise<ContractConfig>`
+- `getContractVersion(network, retry?): Promise<string>`
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
 
-The SDK is stateless. RPC URL, contract ID, and source keypair are passed in at call time.
+The SDK is stateless. Every RPC-touching call above takes a `network:
+NetworkConfig` (`{ rpcUrl, networkPassphrase, contractId }`) plus a
+source keypair where one's needed — see "Network Configuration" below.
+
+### Network Configuration
+
+Per [zksoroban#40](https://github.com/yusufadeagbo/zksoroban/issues/40),
+every RPC-touching SDK function takes a single `network: NetworkConfig`
+— `{ rpcUrl, networkPassphrase, contractId }` — instead of separate
+`rpcUrl`/`contractId`/`registryContractId` string parameters. `TESTNET`,
+`MAINNET`, and `LOCAL` are exported presets:
+
+```ts
+import { TESTNET, verifyOnChain } from "@zksoroban/sdk";
+
+const result = await verifyOnChain({ network: TESTNET, keypair, bundle });
+```
+
+`MAINNET` and `LOCAL` deliberately ship with an empty `rpcUrl` and/or
+`contractId` — Stellar has no single free public Mainnet Soroban RPC
+endpoint the way it does for Testnet, no `zksoroban` contract is
+deployed to Mainnet (the reference circuit's trusted setup is
+testnet-only — see `docs/security-model.md`), and a local quickstart
+deployment's contract ID is generated fresh each time, with no
+universal default. Fill in what's missing by spreading the preset:
+`{ ...LOCAL, contractId: myLocalDeployment }`.
+
+A call whose target contract lives on the same network but isn't the
+default (`contracts/registry` instead of `contracts/verifier`, say)
+overrides just `contractId` the same way:
+`{ ...TESTNET, contractId: registryContractId }`.
+
+**`networkPassphrase` isn't just documentation.** Every function that
+takes a `network` still asks the RPC server for its own passphrase
+(`getNetwork()`, exactly as before) and now also checks it against
+`network.networkPassphrase`, throwing `NetworkMismatchError` — the same
+error class `assertBundleNetwork` already used for a `ProofBundle`
+pointed at the wrong network — before building any transaction. This is
+exactly the class of mistake centralizing network config exists to
+prevent: an `rpcUrl` pointed at one network with a `contractId` left
+over from another.
 
 ### Retry & Exponential Backoff
 
@@ -101,11 +151,10 @@ connections, a node restart mid-request. Pass an optional `retry` policy
 to turn on per-request retries with exponential backoff:
 
 ```ts
-import { verifyViaRegistry } from "@zksoroban/sdk";
+import { TESTNET, verifyViaRegistry } from "@zksoroban/sdk";
 
 const verified = await verifyViaRegistry({
-  rpcUrl,
-  registryContractId,
+  network: { ...TESTNET, contractId: registryContractId },
   circuitId,
   bundle,
   retry: {
@@ -162,6 +211,43 @@ Key properties:
 - **Scope**: transport-only. The retry layer mediates individual RPC
   requests; it never re-runs a call's own logic (calldata validation,
   result decoding, typed-error mapping all happen exactly once).
+
+### Progress Callbacks
+
+Per [zksoroban#29](https://github.com/yusufadeagbo/zksoroban/issues/29),
+`generateProof` and `verifyOnChain` both take an optional
+`onProgress: (stage: ProofStage) => void`, where `ProofStage` is:
+
+```ts
+type ProofStage =
+  | "witness_start" | "witness_done"
+  | "proof_start"   | "proof_done"
+  | "submit_start"  | "submit_done";
+```
+
+**Each function only emits the stages it actually performs** — they're
+two separate calls in this SDK, not one combined operation, and neither
+one fakes timing for work it isn't doing:
+
+- `generateProof` emits `witness_start`/`witness_done` around WASM
+  witness computation, then `proof_start`/`proof_done` around Groth16
+  proving. These are genuinely the two separate, independently-timed
+  calls `snarkjs.groth16.fullProve` makes internally
+  (`wtns.calculate` then `groth16.prove`) and normally hides behind one
+  opaque `await`; `generateProof` calls them directly itself to get real
+  hook points between them, instead of one call with a progress bar that
+  can't actually move until it's already done.
+- `verifyOnChain` emits `submit_start` right before building the
+  transaction and `submit_done` once a final result is ready to return.
+
+An application that wants all six stages, in order, calls `generateProof`
+then `verifyOnChain` with the same `onProgress` — the natural sequence
+for "generate a proof, then submit it," which is already two calls, not
+one, in this SDK.
+
+Any error `onProgress` itself throws is caught and discarded
+(`emitProofStage` in `types.ts`) — a broken progress callback must never
+abort the operation it's reporting on.
 
 ## Contract Layer
 

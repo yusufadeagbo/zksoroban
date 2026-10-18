@@ -13,8 +13,11 @@ import {
 
 import { withRetry } from "./retry.js";
 import { formatProof } from "./proof.js";
+import { createLogger, defaultLogger, Logger, LogHandler } from "./logger.js";
 import {
   ContractConfig,
+  emitProofStage,
+  NetworkConfig,
   NetworkMismatchError,
   ProofBundle,
   RetryOptions,
@@ -209,6 +212,29 @@ export function assertBundleNetwork(bundle: ProofBundle, networkPassphrase: stri
   }
 }
 
+// Shared by every RPC-touching function below (zksoroban#40): build the
+// retry-wrapped rpc.Server for a NetworkConfig, and confirm the RPC server's
+// own reported passphrase actually matches what the NetworkConfig declared
+// -- exactly the class of rpcUrl/networkPassphrase/contractId mix-up
+// centralizing this config is meant to prevent, caught before a
+// transaction is ever built rather than failing less obviously downstream.
+function makeServer(network: NetworkConfig, retry?: RetryOptions) {
+  return withRetry(
+    new rpc.Server(network.rpcUrl, { allowHttp: network.rpcUrl.startsWith("http://") }),
+    retry
+  );
+}
+
+function assertNetworkPassphrase(network: NetworkConfig, actualPassphrase: string): void {
+  if (network.networkPassphrase !== actualPassphrase) {
+    throw new NetworkMismatchError(
+      network.networkPassphrase,
+      actualPassphrase,
+      "The supplied NetworkConfig declares"
+    );
+  }
+}
+
 function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
   if (opts.calldata) {
     return opts.calldata;
@@ -225,22 +251,26 @@ function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
 }
 
 export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
   const calldata = resolveCalldata(opts);
   validateCalldata(calldata);
 
+  logger.debug("verifyOnChain", "resolving calldata", { hasBundle: !!opts.bundle, hasCalldata: !!opts.calldata });
+
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
-      opts.retry
-    );
+    emitProofStage(opts.onProgress, "submit_start");
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("verifyOnChain", "getting network info");
     const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
 
     if (opts.bundle) {
       assertBundleNetwork(opts.bundle, network.passphrase);
     }
 
+    logger.debug("verifyOnChain", "getting account", { publicKey: opts.keypair.publicKey() });
     const account = await server.getAccount(opts.keypair.publicKey());
-    const contract = new Contract(opts.contractId);
+    const contract = new Contract(opts.network.contractId);
     const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
 
     const transaction = new TransactionBuilder(account, {
@@ -260,9 +290,11 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       .setTimeout(30)
       .build();
 
+    logger.debug("verifyOnChain", "preparing transaction");
     const prepared = await server.prepareTransaction(transaction);
     prepared.sign(opts.keypair);
 
+    logger.info("verifyOnChain", "submitting transaction", { contractId: opts.network.contractId });
     const sendResult = await server.sendTransaction(prepared);
     if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
       throw new SorobanZkError(
@@ -271,8 +303,11 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       );
     }
 
+    logger.debug("verifyOnChain", "transaction submitted", { txHash: sendResult.hash, status: sendResult.status });
+
     const started = Date.now();
     while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+      logger.debug("verifyOnChain", "polling transaction status", { txHash: sendResult.hash });
       const result = await server.getTransaction(sendResult.hash);
 
       if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
@@ -281,13 +316,6 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       }
 
       if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-        // A `Result::Err` from `verify_proof` is normally caught below, at
-        // `prepareTransaction`'s simulation step, since simulation executes
-        // the call against current ledger state deterministically. Reaching
-        // FAILED here means the transaction was rejected *after* a
-        // successful simulation (e.g. ledger state changed between
-        // simulating and applying), so there's no reliable Error(Contract,
-        // #N) string to decode from diagnostic events at this point.
         throw new SorobanZkError(
           `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
@@ -309,12 +337,22 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
         );
       }
 
-      return {
+      const verifyResult = {
         verified: returnValue,
         txHash: result.txHash,
         ledger: result.ledger,
         fee: feeFromResult(result.resultXdr)
       };
+
+      logger.info("verifyOnChain", "transaction confirmed", {
+        txHash: verifyResult.txHash,
+        ledger: verifyResult.ledger,
+        fee: verifyResult.fee,
+        verified: verifyResult.verified
+      });
+
+      emitProofStage(opts.onProgress, "submit_done");
+      return verifyResult;
     }
 
     throw new SorobanZkError(
@@ -323,10 +361,13 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
     );
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("verifyOnChain", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
 
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("verifyOnChain", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
 
@@ -349,8 +390,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
  * @example
  * ```ts
  * const result = await verifyBatchOnChain({
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ *   network: TESTNET,
  *   keypair,
  *   items: [
  *     { proof: proofA, publicSignals: signalsA },
@@ -361,6 +401,8 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
  * ```
  */
 export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<VerifyBatchResult> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
+
   if (opts.items.length === 0) {
     throw new SorobanZkError(
       "verifyBatchOnChain requires at least one item",
@@ -368,20 +410,22 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
     );
   }
 
+  logger.debug("verifyBatchOnChain", "formatting calldata items", { itemCount: opts.items.length });
+
   const calldataItems = opts.items.map((item: VerifierBatchItem) =>
     formatProof(item.proof, item.publicSignals, item.expiryLedger)
   );
   calldataItems.forEach(validateCalldata);
 
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
-      opts.retry
-    );
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("verifyBatchOnChain", "getting network info");
     const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
 
+    logger.debug("verifyBatchOnChain", "getting account", { publicKey: opts.keypair.publicKey() });
     const account = await server.getAccount(opts.keypair.publicKey());
-    const contract = new Contract(opts.contractId);
+    const contract = new Contract(opts.network.contractId);
     const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
     const batchScVal = xdr.ScVal.scvVec(calldataItems.map(makeProofItemScVal));
 
@@ -393,9 +437,11 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
       .setTimeout(30)
       .build();
 
+    logger.debug("verifyBatchOnChain", "preparing transaction");
     const prepared = await server.prepareTransaction(transaction);
     prepared.sign(opts.keypair);
 
+    logger.info("verifyBatchOnChain", "submitting transaction", { contractId: opts.network.contractId, itemCount: opts.items.length });
     const sendResult = await server.sendTransaction(prepared);
     if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
       throw new SorobanZkError(
@@ -404,8 +450,11 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
       );
     }
 
+    logger.debug("verifyBatchOnChain", "transaction submitted", { txHash: sendResult.hash, status: sendResult.status });
+
     const started = Date.now();
     while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+      logger.debug("verifyBatchOnChain", "polling transaction status", { txHash: sendResult.hash });
       const result = await server._getTransaction(sendResult.hash);
 
       if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
@@ -414,9 +463,6 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
       }
 
       if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-        // See the identical comment in verifyOnChain: reaching FAILED here
-        // means the transaction was rejected after a successful simulation,
-        // so there's no reliable Error(Contract, #N) string to decode.
         throw new SorobanZkError(
           `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
@@ -431,12 +477,22 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
         );
       }
 
-      return {
+      const batchResult = {
         verified: returnValue ?? [],
         txHash: result.txHash,
         ledger: result.ledger,
         fee: feeFromResult(xdr.TransactionResult.fromXDR(result.resultXdr, "base64"))
       };
+
+      logger.info("verifyBatchOnChain", "transaction confirmed", {
+        txHash: batchResult.txHash,
+        ledger: batchResult.ledger,
+        fee: batchResult.fee,
+        verifiedCount: batchResult.verified.filter(v => v).length,
+        totalCount: batchResult.verified.length
+      });
+
+      return batchResult;
     }
 
     throw new SorobanZkError(
@@ -445,10 +501,13 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
     );
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("verifyBatchOnChain", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
 
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("verifyBatchOnChain", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
 
@@ -488,8 +547,7 @@ export interface EstimateVerifyFeeResult {
  * @example
  * ```ts
  * const { stroops, xlm } = await estimateVerifyFee({
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
+ *   network: TESTNET,
  *   keypair,
  *   bundle,
  * });
@@ -497,22 +555,25 @@ export interface EstimateVerifyFeeResult {
  * ```
  */
 export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVerifyFeeResult> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
   const calldata = resolveCalldata(opts);
   validateCalldata(calldata);
 
+  logger.debug("estimateVerifyFee", "resolving calldata", { hasBundle: !!opts.bundle, hasCalldata: !!opts.calldata });
+
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, { allowHttp: opts.rpcUrl.startsWith("http://") }),
-      opts.retry
-    );
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("estimateVerifyFee", "getting network info");
     const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
 
     if (opts.bundle) {
       assertBundleNetwork(opts.bundle, network.passphrase);
     }
 
+    logger.debug("estimateVerifyFee", "getting account", { publicKey: opts.keypair.publicKey() });
     const account = await server.getAccount(opts.keypair.publicKey());
-    const contract = new Contract(opts.contractId);
+    const contract = new Contract(opts.network.contractId);
     const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
 
     const transaction = new TransactionBuilder(account, {
@@ -532,6 +593,7 @@ export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVe
       .setTimeout(30)
       .build();
 
+    logger.debug("estimateVerifyFee", "simulating transaction");
     const simResult = await server.simulateTransaction(transaction);
 
     if (rpc.Api.isSimulationError(simResult)) {
@@ -540,13 +602,19 @@ export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVe
 
     const stroops = BigInt(BASE_FEE) + BigInt(simResult.minResourceFee);
 
-    return { stroops, xlm: stroopsToXlm(stroops) };
+    const result = { stroops, xlm: stroopsToXlm(stroops) };
+    logger.info("estimateVerifyFee", "fee estimated", { stroops: result.stroops.toString(), xlm: result.xlm });
+
+    return result;
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("estimateVerifyFee", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
 
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("estimateVerifyFee", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
 
@@ -584,35 +652,35 @@ function resolveRegistryCalldata(opts: VerifyViaRegistryOptions): SorobanProofCa
  * @example
  * ```ts
  * const verified = await verifyViaRegistry({
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   registryContractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH",
+ *   network: { ...TESTNET, contractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH" },
  *   circuitId: 2, // range_proof, once registered — see docs/multi-circuit.md
  *   bundle,
  * });
  * ```
  */
 export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise<boolean> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
   const calldata = resolveRegistryCalldata(opts);
   validateCalldata(calldata);
 
+  logger.debug("verifyViaRegistry", "resolving calldata", { hasBundle: !!opts.bundle, hasCalldata: !!opts.calldata, circuitId: opts.circuitId });
+
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, {
-        allowHttp: opts.rpcUrl.startsWith("http://")
-      }),
-      opts.retry
-    );
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("verifyViaRegistry", "getting network info");
     const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
 
     if (opts.bundle) {
       assertBundleNetwork(opts.bundle, network.passphrase);
     }
 
-    const contract = new Contract(opts.registryContractId);
+    const contract = new Contract(opts.network.contractId);
 
     const ephemeral = Keypair.random();
     let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
     try {
+      logger.debug("verifyViaRegistry", "getting ephemeral account");
       account = await server.getAccount(ephemeral.publicKey());
     } catch {
       account = new Account(ephemeral.publicKey(), "0");
@@ -635,6 +703,7 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
       .setTimeout(30)
       .build();
 
+    logger.debug("verifyViaRegistry", "simulating transaction");
     const simResult = await server.simulateTransaction(transaction);
 
     if (rpc.Api.isSimulationError(simResult)) {
@@ -651,12 +720,18 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
       );
     }
 
-    return Boolean(scValToNative(simResult.result.retval));
+    const verified = Boolean(scValToNative(simResult.result.retval));
+    logger.info("verifyViaRegistry", "verification complete", { circuitId: opts.circuitId, verified });
+
+    return verified;
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("verifyViaRegistry", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("verifyViaRegistry", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
 
@@ -678,8 +753,7 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
  * @example
  * ```ts
  * const results = await verifyBatchViaRegistry({
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   registryContractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH",
+ *   network: { ...TESTNET, contractId: "CDTPNARKKZCZ36PL4BNKBXZTT2BLVR373S2K5NCFAOKCPPY62ESRHSXH" },
  *   items: [
  *     { circuitId: 1, proof: poseidonProof, publicSignals: poseidonSignals },
  *     { circuitId: 2, proof: rangeProof, publicSignals: rangeSignals },
@@ -691,12 +765,16 @@ export async function verifyViaRegistry(opts: VerifyViaRegistryOptions): Promise
 export async function verifyBatchViaRegistry(
   opts: VerifyBatchViaRegistryOptions
 ): Promise<boolean[]> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
+
   if (opts.items.length === 0) {
     throw new SorobanZkError(
       "verifyBatchViaRegistry requires at least one item",
       SorobanZkErrorCode.INVALID_PROOF_FORMAT
     );
   }
+
+  logger.debug("verifyBatchViaRegistry", "formatting calldata items", { itemCount: opts.items.length });
 
   const calldataItems = opts.items.map((item: RegistryBatchItem) => ({
     circuitId: item.circuitId,
@@ -705,19 +783,17 @@ export async function verifyBatchViaRegistry(
   calldataItems.forEach(({ calldata }) => validateCalldata(calldata));
 
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, {
-        allowHttp: opts.rpcUrl.startsWith("http://")
-      }),
-      opts.retry
-    );
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("verifyBatchViaRegistry", "getting network info");
     const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
 
-    const contract = new Contract(opts.registryContractId);
+    const contract = new Contract(opts.network.contractId);
 
     const ephemeral = Keypair.random();
     let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
     try {
+      logger.debug("verifyBatchViaRegistry", "getting ephemeral account");
       account = await server.getAccount(ephemeral.publicKey());
     } catch {
       account = new Account(ephemeral.publicKey(), "0");
@@ -737,6 +813,7 @@ export async function verifyBatchViaRegistry(
       .setTimeout(30)
       .build();
 
+    logger.debug("verifyBatchViaRegistry", "simulating transaction");
     const simResult = await server.simulateTransaction(transaction);
 
     if (rpc.Api.isSimulationError(simResult)) {
@@ -754,12 +831,18 @@ export async function verifyBatchViaRegistry(
     }
 
     const native = scValToNative(simResult.result.retval);
-    return Array.isArray(native) ? native.map(Boolean) : [];
+    const results = Array.isArray(native) ? native.map(Boolean) : [];
+    logger.info("verifyBatchViaRegistry", "verification complete", { itemCount: results.length, verifiedCount: results.filter(v => v).length });
+
+    return results;
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("verifyBatchViaRegistry", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("verifyBatchViaRegistry", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
 
@@ -771,15 +854,17 @@ export async function verifyBatchViaRegistry(
  * Options accepted by {@link getContractConfig}.
  */
 export interface GetContractConfigOptions {
-  /** Soroban RPC endpoint URL. */
-  rpcUrl: string;
-  /** Bech32m contract address (starts with `C`). */
-  contractId: string;
+  network: NetworkConfig;
   /**
    * Optional retry policy for transient RPC failures. Omit for the
    * previous single-attempt behavior — see {@link RetryOptions}.
    */
   retry?: RetryOptions;
+  /**
+   * Optional logger for structured logging. Omit to use the default
+   * logger (WARN level, console output) — see {@link LogHandler}.
+   */
+  logger?: LogHandler;
 }
 
 /**
@@ -791,25 +876,21 @@ export interface GetContractConfigOptions {
  *
  * @example
  * ```ts
- * const config = await getContractConfig({
- *   rpcUrl: "https://soroban-testnet.stellar.org",
- *   contractId: "CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN",
- * });
+ * const config = await getContractConfig({ network: TESTNET });
  * console.log(config.rateLimitMax, config.rateLimitWindow);
  * ```
  */
 export async function getContractConfig(
   opts: GetContractConfigOptions
 ): Promise<ContractConfig> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
+
   try {
-    const server = withRetry(
-      new rpc.Server(opts.rpcUrl, {
-        allowHttp: opts.rpcUrl.startsWith("http://")
-      }),
-      opts.retry
-    );
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("getContractConfig", "getting network info");
     const network = await server.getNetwork();
-    const contract = new Contract(opts.contractId);
+    assertNetworkPassphrase(opts.network, network.passphrase);
+    const contract = new Contract(opts.network.contractId);
 
     // Build a transaction for simulation purposes only.  We use a throw-away
     // ephemeral keypair because no signing or fee payment happens — only
@@ -817,6 +898,7 @@ export async function getContractConfig(
     const ephemeral = Keypair.random();
     let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
     try {
+      logger.debug("getContractConfig", "getting ephemeral account");
       account = await server.getAccount(ephemeral.publicKey());
     } catch {
       // If the ephemeral account is not funded on the network (expected), fall
@@ -832,6 +914,7 @@ export async function getContractConfig(
       .setTimeout(30)
       .build();
 
+    logger.debug("getContractConfig", "simulating transaction");
     const simResult = await server.simulateTransaction(transaction);
 
     if (rpc.Api.isSimulationError(simResult)) {
@@ -860,7 +943,7 @@ export async function getContractConfig(
       allowlist_enabled: boolean;
     };
 
-    return {
+    const config = {
       admin: String(raw.admin),
       paused: Boolean(raw.paused),
       feeAmount: raw.fee_amount != null ? BigInt(raw.fee_amount) : undefined,
@@ -870,10 +953,17 @@ export async function getContractConfig(
       timelockDelay: raw.timelock_delay != null ? Number(raw.timelock_delay) : undefined,
       allowlistEnabled: Boolean(raw.allowlist_enabled)
     };
+
+    logger.info("getContractConfig", "config retrieved", { contractId: opts.network.contractId, admin: config.admin, paused: config.paused });
+
+    return config;
   } catch (error) {
     if (error instanceof SorobanZkError) {
+      logger.error("getContractConfig", "operation failed", { code: error.code, message: error.message });
       throw error;
     }
-    throw classifyError(error);
+    const classified = classifyError(error);
+    logger.error("getContractConfig", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
   }
 }
