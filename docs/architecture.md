@@ -95,6 +95,7 @@ Public API:
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
 - `getContractConfig(opts): Promise<ContractConfig>`
 - `getContractVersion(network, retry?): Promise<string>`
+- `checkNetwork(network): Promise<NetworkHealth>` — lightweight RPC reachability/latency check; never throws, does not retry (see "RPC Health Check" below)
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
@@ -140,6 +141,42 @@ pointed at the wrong network — before building any transaction. This is
 exactly the class of mistake centralizing network config exists to
 prevent: an `rpcUrl` pointed at one network with a `contractId` left
 over from another.
+
+### RPC Health Check
+
+Per [zksoroban#87](https://github.com/yusufadeagbo/zksoroban/issues/87),
+`checkNetwork(network)` pings `network.rpcUrl` with a single `getNetwork`
+call and reports whether it's reachable, how long that took, and what
+network it says it's on:
+
+```ts
+const health = await checkNetwork(TESTNET);
+// { reachable: true, latencyMs: 83, networkPassphrase: "...", protocolVersion: "21" }
+// or: { reachable: false, error: "connect ECONNREFUSED ..." }
+```
+
+Deliberately different from every other RPC-touching function here, for
+reasons specific to what a health check is for:
+
+- **Never throws.** Every outcome — reachable or not — comes back as a
+  plain `NetworkHealth` object; `reachable: false` with an `error` string
+  stands in for what would otherwise be a thrown error. A health check
+  that itself needs a `try`/`catch` defeats the point.
+- **Never retries**, even though `network`/`RetryOptions` style retry
+  exists elsewhere in this SDK — a health check needs the *unsmoothed*
+  latency and reachability of one real attempt, not a number already
+  averaged or masked by a retry policy.
+- **Warns instead of throwing on a passphrase mismatch.** Every other
+  function throws `NetworkMismatchError` when `network.networkPassphrase`
+  doesn't match what the RPC server reports (see "Network Configuration"
+  above) — appropriate when that mismatch would lead to building a
+  transaction for the wrong network. Here, reachability itself is useful
+  information even for a misconfigured `NetworkConfig`, so `checkNetwork`
+  reports `reachable: true` (with the server's real passphrase) and emits
+  a `console.warn` instead.
+
+`demo/src/run.ts` calls it at startup, before generating a proof, and
+prints the result either way.
 
 ### Retry & Exponential Backoff
 
