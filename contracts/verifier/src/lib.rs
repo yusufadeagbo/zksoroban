@@ -12,6 +12,9 @@ const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
 const CIRCUIT_PUBLIC_INPUT_COUNT: u32 = 1;
 const EXPECTED_PUBLIC_INPUT_COUNT: u32 = CIRCUIT_PUBLIC_INPUT_COUNT + 1;
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Capacity of the `get_history` ring buffer (zksoroban#101). The 101st
+/// recorded outcome overwrites the slot the 1st used — see `record_history`.
+const HISTORY_CAPACITY: u32 = 100;
 
 #[contracttype]
 #[derive(Clone)]
@@ -68,6 +71,22 @@ enum DataKey {
     PendingVkUpdate,
     Paused,
     Nullifier(BytesN<32>),
+    /// Total number of outcomes ever recorded into the history ring buffer
+    /// (zksoroban#101) -- monotonically increasing, never reset. The slot an
+    /// entry lives in is `HistoryCount % HISTORY_CAPACITY` at the time it was
+    /// recorded, so this also doubles as a write cursor.
+    HistoryCount,
+    /// One ring-buffer slot, `0..HISTORY_CAPACITY`. Holds a `HistoryEntry`.
+    HistorySlot(u32),
+}
+
+/// One entry in the `get_history` ring buffer (zksoroban#101).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryEntry {
+    pub success: bool,
+    pub caller: Address,
+    pub ledger_sequence: u32,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -145,6 +164,52 @@ impl VerifierContract {
             .instance()
             .get(&DataKey::VerificationCount(commitment))
             .unwrap_or(0)
+    }
+
+    /// The most recent recorded `verify_proof`/`verify_batch` outcomes, in
+    /// reverse chronological order (most recent first). Only the last
+    /// `HISTORY_CAPACITY` (100) outcomes are retained; once that many have
+    /// been recorded, each new one overwrites the oldest (zksoroban#101).
+    ///
+    /// `offset` skips that many of the most recent entries before starting
+    /// (`0` starts from the most recent); `limit` caps how many are
+    /// returned. Returns fewer than `limit` once there's nothing older left,
+    /// and an empty vec if `offset` is at or past how many entries exist.
+    /// This is a read-only view: no auth required, no state mutated.
+    ///
+    /// # Example
+    /// `get_history(0, 10)` returns the 10 most recent outcomes.
+    pub fn get_history(env: Env, offset: u32, limit: u32) -> Vec<HistoryEntry> {
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HistoryCount)
+            .unwrap_or(0);
+        let stored = core::cmp::min(count, HISTORY_CAPACITY as u64) as u32;
+
+        let mut results = Vec::new(&env);
+        if offset >= stored {
+            return results;
+        }
+
+        let take = core::cmp::min(limit, stored - offset);
+        for i in 0..take {
+            // `count - 1` is the most recently written slot's absolute index
+            // (see `record_history`); walking backwards from there in
+            // absolute-index space, then reducing mod capacity, visits
+            // slots in actual recency order even after the buffer has
+            // wrapped and slot numbers no longer correspond to recency.
+            let absolute_index = count - 1 - (offset + i) as u64;
+            let slot = (absolute_index % HISTORY_CAPACITY as u64) as u32;
+            let entry: HistoryEntry = env
+                .storage()
+                .instance()
+                .get(&DataKey::HistorySlot(slot))
+                .expect("a slot within `stored` must have been written");
+            results.push_back(entry);
+        }
+
+        results
     }
 
     pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
@@ -443,6 +508,7 @@ impl VerifierContract {
                 Err(_) => false,
             };
             publish_verification_result(&env, &caller, success, &item.public_inputs);
+            record_history(&env, success, &caller);
             results.push_back(success);
         }
 
@@ -483,6 +549,7 @@ impl VerifierInterface for VerifierContract {
         // so publishing first would be a silent no-op.
         if let Ok(success) = result {
             publish_verification_result(&env, &caller, success, &item.public_inputs);
+            record_history(&env, success, &caller);
         }
 
         result
@@ -624,6 +691,42 @@ fn record_verification_attempt(env: &Env, commitment: &BytesN<32>) {
     let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
     let next = current + 1;
     env.storage().instance().set(&key, &next);
+}
+
+/// Append one outcome to the `get_history` ring buffer (zksoroban#101). O(1):
+/// one slot write plus the counter write, regardless of how full the buffer
+/// is -- never rewrites the whole buffer, so this doesn't scale with
+/// `HISTORY_CAPACITY`.
+///
+/// Called from the same place `publish_verification_result` is (the `Ok(...)`
+/// path in `verify_proof`, and unconditionally per item in `verify_batch`),
+/// for the same reason that function documents: a call that returns `Err`
+/// from a `#[contracterror]` `Result` rolls back everything it did, storage
+/// writes included, so there would be nothing to record anyway on a
+/// rate-limited/paused/disallowed/expired/already-used rejection. "Updated on
+/// every `verify` call regardless of outcome" (zksoroban#101's acceptance
+/// criteria) means regardless of success/failure to verify (`Ok(true)` vs.
+/// `Ok(false)`) -- not regardless of those `Err` paths, which is exactly how
+/// `VerificationResult` already behaves.
+fn record_history(env: &Env, success: bool, caller: &Address) {
+    let count: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::HistoryCount)
+        .unwrap_or(0);
+    let slot = (count % HISTORY_CAPACITY as u64) as u32;
+
+    env.storage().instance().set(
+        &DataKey::HistorySlot(slot),
+        &HistoryEntry {
+            success,
+            caller: caller.clone(),
+            ledger_sequence: env.ledger().sequence(),
+        },
+    );
+    env.storage()
+        .instance()
+        .set(&DataKey::HistoryCount, &(count + 1));
 }
 
 /// Derives a proof's nullifier from `proof_a`'s raw bytes for replay

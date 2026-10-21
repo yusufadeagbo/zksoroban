@@ -345,6 +345,32 @@ storage. The counter increments only on a successful pairing check —
 failed proof attempts do not affect the count. The admin can call
 `upgrade` to redeploy from scratch if storage ever becomes a concern.
 
+### Verification History (Ring Buffer)
+
+Per [zksoroban#101](https://github.com/yusufadeagbo/zksoroban/issues/101),
+`get_history(offset, limit)` returns the most recent `verify_proof`/
+`verify_batch` outcomes — `{ success, caller, ledger_sequence }` each — in
+reverse chronological order, so a light client or monitoring dashboard can
+see recent activity without scanning the event log.
+
+Only the last 100 outcomes are retained: `HistoryCount` (an
+ever-increasing `u64`) and 100 `HistorySlot(u32)` entries live in
+`env.storage().instance()`, and recording one outcome is O(1) — write one
+slot at `HistoryCount % 100`, increment `HistoryCount` — regardless of how
+full the buffer is, rather than rewriting the whole buffer on every call.
+The 101st outcome overwrites the slot the 1st used, and so on; `get_history`
+walks backwards from the most recently written slot to reconstruct recency
+order even after the buffer has wrapped and slot numbers no longer
+correspond to write order.
+
+Recorded "regardless of outcome" means regardless of `Ok(true)` vs.
+`Ok(false)` — not regardless of an `Err` return (rate-limited, paused,
+disallowed, expired, already-used): Soroban rolls back every storage write
+a call made before it returns `Err` from a `#[contracterror]` `Result`, the
+same reason `VerificationResult` isn't published on those paths either (see
+"Events" below). There is nothing a history write could persist on a path
+that gets rolled back wholesale.
+
 ### Timelocked Verifying-Key Updates
 
 Per [zksoroban#46](https://github.com/yusufadeagbo/zksoroban/issues/46),

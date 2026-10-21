@@ -1718,3 +1718,212 @@ fn verify_batch_rejects_call_with_no_authorization() {
 
     client.verify_batch(&caller, &Vec::new(&env));
 }
+
+// get_history ring buffer (#101).
+
+/// A `ProofItem`/`verify_proof` call shape that always resolves `Ok(false)`
+/// via the wrong-public-input-count path (see
+/// `verify_proof_returns_false_for_wrong_public_input_count` above) --
+/// crucially, this never reaches the `if verified { ...store nullifier... }`
+/// branch, so the same `proof_a` can be replayed indefinitely across many
+/// calls without ever hitting `Error::AlreadyUsed`. Used below to generate
+/// many distinct recorded outcomes without needing many distinct real
+/// proofs.
+fn call_wrong_input_count(env: &Env, client: &VerifierContractClient, caller: &Address) -> bool {
+    let only_commitment = vec![env, BytesN::from_array(env, &VALID_PUBLIC_INPUT)];
+    client.verify_proof(
+        caller,
+        &Bytes::from_array(env, &VALID_PROOF_A),
+        &Bytes::from_array(env, &VALID_PROOF_B),
+        &Bytes::from_array(env, &VALID_PROOF_C),
+        &only_commitment,
+    )
+}
+
+#[test]
+fn get_history_is_empty_before_any_verification() {
+    let (_env, _admin, client) = setup(10, 100);
+    assert!(client.get_history(&0, &10).is_empty());
+}
+
+#[test]
+fn get_history_records_success_and_failure_with_caller_and_ledger_sequence() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 500);
+    let caller_a = Address::generate(&env);
+    let caller_b = Address::generate(&env);
+
+    assert!(call_valid(&env, &client, &caller_a));
+    // A distinct proof (VALID_PROOF_*_2's bytes) from call_valid's -- not a
+    // replay of the proof just successfully verified above, which would hit
+    // Error::AlreadyUsed before ever reaching the wrong-input-count check
+    // this is actually testing.
+    let only_commitment = vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT_2)];
+    let result_b = client.verify_proof(
+        &caller_b,
+        &Bytes::from_array(&env, &VALID_PROOF_A_2),
+        &Bytes::from_array(&env, &VALID_PROOF_B_2),
+        &Bytes::from_array(&env, &VALID_PROOF_C_2),
+        &only_commitment,
+    );
+    assert!(!result_b);
+
+    let history = client.get_history(&0, &10);
+    assert_eq!(
+        history,
+        vec![
+            &env,
+            HistoryEntry {
+                success: false,
+                caller: caller_b,
+                ledger_sequence: 500,
+            },
+            HistoryEntry {
+                success: true,
+                caller: caller_a,
+                ledger_sequence: 500,
+            },
+        ],
+        "most recent first"
+    );
+}
+
+#[test]
+fn get_history_offset_and_limit_paginate_over_a_partial_fill() {
+    let (env, _admin, client) = setup(100, 100);
+    let callers: std::vec::Vec<Address> = (0..5).map(|_| Address::generate(&env)).collect();
+    for caller in &callers {
+        call_wrong_input_count(&env, &client, caller);
+    }
+
+    // Most-recent-first: index 0 is callers[4], ..., index 4 is callers[0].
+    let page = client.get_history(&1, &2);
+    assert_eq!(
+        page,
+        vec![
+            &env,
+            HistoryEntry {
+                success: false,
+                caller: callers[3].clone(),
+                ledger_sequence: env.ledger().sequence(),
+            },
+            HistoryEntry {
+                success: false,
+                caller: callers[2].clone(),
+                ledger_sequence: env.ledger().sequence(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn get_history_returns_fewer_than_limit_once_nothing_older_is_left() {
+    let (env, _admin, client) = setup(100, 100);
+    for _ in 0..3 {
+        call_wrong_input_count(&env, &client, &Address::generate(&env));
+    }
+
+    assert_eq!(client.get_history(&0, &10).len(), 3);
+}
+
+#[test]
+fn get_history_returns_empty_once_offset_is_at_or_past_the_end() {
+    let (env, _admin, client) = setup(100, 100);
+    call_wrong_input_count(&env, &client, &Address::generate(&env));
+
+    assert!(client.get_history(&1, &10).is_empty());
+    assert!(client.get_history(&5, &10).is_empty());
+}
+
+#[test]
+fn get_history_ring_buffer_wraps_after_101_entries() {
+    let (env, _admin, client) = setup(1_000, 100);
+    let callers: std::vec::Vec<Address> = (0..101).map(|_| Address::generate(&env)).collect();
+    for caller in &callers {
+        call_wrong_input_count(&env, &client, caller);
+    }
+
+    // Capped at HISTORY_CAPACITY even though 101 outcomes were recorded.
+    assert_eq!(client.get_history(&0, &200).len(), 100);
+
+    // The 101st entry (callers[100]) overwrote the slot the 1st
+    // (callers[0]) used -- callers[0] is gone, and the oldest entry
+    // retrievable is now callers[1].
+    let most_recent = client.get_history(&0, &1);
+    assert_eq!(most_recent.get(0).unwrap().caller, callers[100]);
+
+    let oldest_surviving = client.get_history(&99, &1);
+    assert_eq!(oldest_surviving.get(0).unwrap().caller, callers[1]);
+}
+
+#[test]
+fn get_history_is_not_recorded_for_a_call_that_returns_err() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+    client.set_allowlist_mode(&true);
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+    assert_eq!(result, Err(Ok(Error::CallerNotAllowed)));
+
+    // Soroban rolls back everything a call did before it returned Err from
+    // a #[contracterror] Result (same reason VerificationResult isn't
+    // published on this path either) -- there would be nothing to roll
+    // back to even if record_history ran, so it's never reached.
+    assert!(client.get_history(&0, &10).is_empty());
+}
+
+#[test]
+fn verify_batch_records_history_for_every_item_regardless_of_outcome() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let wrong_count_item = ProofItem {
+        proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+        proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+        proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+        public_inputs: vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT)],
+    };
+
+    let results = client.verify_batch(
+        &caller,
+        &vec![&env, valid_batch_item(&env), wrong_count_item],
+    );
+    assert_eq!(results, vec![&env, true, false]);
+
+    let history = client.get_history(&0, &10);
+    assert_eq!(
+        history,
+        vec![
+            &env,
+            HistoryEntry {
+                success: false,
+                caller: caller.clone(),
+                ledger_sequence: 100,
+            },
+            HistoryEntry {
+                success: true,
+                caller: caller.clone(),
+                ledger_sequence: 100,
+            },
+        ]
+    );
+}
+
+#[test]
+fn history_lives_in_instance_storage() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+    call_valid(&env, &client, &caller);
+
+    env.as_contract(&client.address, || {
+        assert!(env.storage().instance().has(&DataKey::HistoryCount));
+        assert!(env.storage().instance().has(&DataKey::HistorySlot(0)));
+        assert!(!env.storage().temporary().has(&DataKey::HistoryCount));
+    });
+}

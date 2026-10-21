@@ -18,6 +18,18 @@ sense.
 
 ### Added
 
+- **contracts**: `get_history(offset, limit)` on `contracts/verifier` — an
+  on-chain ring buffer of the last 100 `verify_proof`/`verify_batch`
+  outcomes (`{ success, caller, ledger_sequence }`), returned most recent
+  first, so a light client or monitoring dashboard can see recent activity
+  without scanning the event log. O(1) to record regardless of how full
+  the buffer is: the 101st outcome overwrites the slot the 1st used. Like
+  `VerificationResult` (zksoroban#218), only recorded on an `Ok(...)`
+  outcome — a call that returns `Err` rolls back everything it did, so
+  there's nothing a rate-limited/paused/disallowed/expired/already-used
+  rejection could have left behind anyway. See
+  [docs/architecture.md](docs/architecture.md#verification-history-ring-buffer)
+  (#101).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and
