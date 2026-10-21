@@ -2,8 +2,9 @@
  * Runs after the CJS, ESM, and types tsc builds finish. Marks each output
  * directory with its own package.json (so Node interprets dist/cjs/*.js as
  * CommonJS and dist/esm/*.js as ESM regardless of the package's own "type"
- * field) and writes the two top-level dual-format entry points that
- * sdk/package.json's "exports" map points at.
+ * field) and writes the top-level dual-format entry points that
+ * sdk/package.json's "exports" map points at — one pair for the main `.`
+ * entry, one pair for `./mock`.
  */
 const fs = require("node:fs");
 const path = require("node:path");
@@ -24,4 +25,13 @@ fs.writeFileSync(
 fs.writeFileSync(
   path.join(distDir, "index.mjs"),
   'export * from "./esm/index.js";\n',
+);
+
+fs.writeFileSync(
+  path.join(distDir, "mock.cjs"),
+  'module.exports = require("./cjs/mock.js");\n',
+);
+fs.writeFileSync(
+  path.join(distDir, "mock.mjs"),
+  'export * from "./esm/mock.js";\n',
 );

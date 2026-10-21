@@ -1,6 +1,6 @@
 {
   "name": "@zksoroban/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for Soroban zero-knowledge proof formatting and verification",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
@@ -15,6 +15,11 @@
     "./browser": {
       "types": "./dist/types/browser.d.ts",
       "import": "./dist/browser/index.mjs"
+    },
+    "./mock": {
+      "types": "./dist/types/mock.d.ts",
+      "import": "./dist/mock.mjs",
+      "require": "./dist/mock.cjs"
     }
   },
   "files": [

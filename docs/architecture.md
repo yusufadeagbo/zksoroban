@@ -81,6 +81,12 @@ witness computation and Groth16 proving from in-memory `Uint8Array`
 bytes, with no filesystem access, so it works the same in a browser as
 in Node.
 
+A fifth file, `mock.ts` (the separate `@zksoroban/sdk/mock` entry point —
+see [docs/testing.md](testing.md)), has no responsibility over the real
+SDK's behavior at all — it's a mock `verifyOnChain`/`generateProof` pair
+for applications built on zksoroban to unit-test their own integration
+code against.
+
 Public API:
 
 - `poseidon(inputs: bigint[]): bigint`
@@ -96,6 +102,7 @@ Public API:
 - `getContractConfig(opts): Promise<ContractConfig>`
 - `getContractVersion(network, retry?): Promise<string>`
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
+- `createMockSdk(options?): MockSdk` — `@zksoroban/sdk/mock` only; a mock `verifyOnChain`/`generateProof` for testing applications built on zksoroban (see [docs/testing.md](testing.md))
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
 

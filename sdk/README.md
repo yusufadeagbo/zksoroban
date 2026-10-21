@@ -6,6 +6,12 @@ verification against `contracts/verifier`/`contracts/registry`. See the
 [docs/architecture.md](../docs/architecture.md) for how this fits together
 with the contracts and circuits.
 
+Building an application on top of this SDK? See
+[docs/testing.md](../docs/testing.md) for `@zksoroban/sdk/mock`, a mock
+`verifyOnChain`/`generateProof` for unit-testing your own integration code
+without a real network or real proofs. The rest of this section is about
+testing the SDK itself.
+
 ## Testing
 
 ```sh

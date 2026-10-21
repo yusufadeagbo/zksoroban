@@ -11,13 +11,25 @@ see the git history for those.
 
 ## [Unreleased]
 
-Nothing has been tagged or published yet: `sdk/package.json` and both
-contracts' `Cargo.toml` are still at their initial `0.1.0`, and everything
-below has only ever existed on `main`. All of it is "unreleased" in that
-sense.
+Nothing has been tagged or published yet — everything below has only ever
+existed on `main`. All of it is "unreleased" in that sense, even though
+`sdk/package.json`'s own version has already moved past its initial
+`0.1.0` to reflect in-progress breaking/additive changes (see
+[docs/versioning.md](docs/versioning.md)).
 
 ### Added
 
+- **sdk**: `createMockSdk` (`@zksoroban/sdk/mock`) — a mock
+  `verifyOnChain`/`generateProof` pair for applications built on zksoroban
+  to unit-test their own integration code without a real Stellar network,
+  wasm/zkey circuit files, or real proofs. `verifyOnChain` resolves (or, if
+  configured with an `Error`, rejects) with a configurable `verifyResult`
+  after an optional artificial `delay`; `generateProof` returns a fixed,
+  deterministic fake proof. Both emit the same `onProgress` stages the real
+  functions do. Every call is recorded, in order, on that mock instance's
+  own `calls` array — independent of any other `createMockSdk()` instance,
+  so tests never leak state into each other. See
+  [docs/testing.md](docs/testing.md) (#66).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and

@@ -69,7 +69,7 @@ Expected result:
 - `sdk/`: a TypeScript SDK for Poseidon hashing, snarkjs proof formatting, and on-chain verification — with opt-in retry-with-backoff for transient RPC failures (see [docs/architecture.md](docs/architecture.md#retry--exponential-backoff)). See [sdk/README.md](sdk/README.md) for testing, including the snapshot tests that catch proof-encoding regressions.
 - `circuits/`: the reference Poseidon preimage circuit (wired to both contracts above) plus three additional circuits — `merkle_inclusion`, `range_proof`, `threshold_2of3` — registered with `contracts/registry` and tested there, but not yet on the live Testnet deployment (see docs/multi-circuit.md).
 - `demo/`: an end-to-end script that generates a fresh secret, proves knowledge of its Poseidon commitment, and verifies it on Stellar Testnet.
-- `docs/`: architecture notes, ZK primer, proof format specification, security audit checklist, and Poseidon parameter notes.
+- `docs/`: architecture notes, ZK primer, proof format specification, security audit checklist, Poseidon parameter notes, and a guide to testing applications built on zksoroban ([docs/testing.md](docs/testing.md)).
 
 ## Architecture
 
