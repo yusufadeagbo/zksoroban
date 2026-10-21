@@ -256,6 +256,46 @@ fn version_returns_the_crate_version() {
     assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
 }
 
+// estimate_cost (#141): a fixed constant, not a live measurement (see
+// lib.rs's ESTIMATED_VERIFY_COST doc comment for why) -- so this test can
+// only sanity-check the shape of the value, not reproduce the measurement
+// itself.
+#[test]
+fn estimate_cost_is_non_zero_and_within_a_reasonable_range_of_the_real_pairing_check_cost() {
+    let (_env, _admin, client) = setup(10, 100);
+    let cost = client.estimate_cost();
+
+    assert!(cost > 0, "estimate_cost must be non-zero");
+    // A BN254 pairing check is a few million to a few tens of millions of
+    // instructions on this host -- see docs/performance.md. One order of
+    // magnitude of headroom on either side catches "forgot to update this
+    // constant" (stuck at 0, or some unrelated small number) and "pasted
+    // the wrong units" (way past what any single contract call could cost)
+    // without being so tight it breaks on every legitimate re-measurement.
+    assert!(
+        cost > 1_000_000 && cost < 1_000_000_000,
+        "estimate_cost ({cost}) is outside the expected order of magnitude for a single BN254 pairing check"
+    );
+}
+
+#[test]
+fn estimate_cost_does_not_require_authorization() {
+    // No env.mock_all_auths() here, deliberately -- a read-only view
+    // function like get_config/verification_count should never require
+    // any caller's auth, and this would panic if estimate_cost ever
+    // started requiring one.
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.estimate_cost(), ESTIMATED_VERIFY_COST);
+}
+
 #[test]
 fn verify_proof_returns_true_for_valid_unexpired_proof() {
     let (env, _admin, client) = setup(10, 100);

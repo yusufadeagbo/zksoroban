@@ -92,7 +92,8 @@ Public API:
 - `verifyViaRegistry(opts): Promise<boolean>` — `contracts/registry`, simulation-only
 - `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
-- `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
+- `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>` — real fee quote for a specific call, via a full simulation
+- `getEstimatedVerifyCost(opts): Promise<bigint>` — quick, fixed instruction-count ballpark from `contracts/verifier::estimate_cost()`, not a fee (zksoroban#141)
 - `getContractConfig(opts): Promise<ContractConfig>`
 - `getContractVersion(network, retry?): Promise<string>`
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
@@ -344,6 +345,24 @@ so an attacker cannot mint unbounded distinct commitments to grow
 storage. The counter increments only on a successful pairing check —
 failed proof attempts do not affect the count. The admin can call
 `upgrade` to redeploy from scratch if storage ever becomes a concern.
+
+### Estimated Verification Cost
+
+`estimate_cost()` (zksoroban#141) returns a fixed, pre-measured CPU
+instruction count for a single `verify_proof` call — `ESTIMATED_VERIFY_COST`,
+a constant, not something computed from a live pairing check. See
+`docs/performance.md`'s "Estimated Verification Cost" section for the
+exact value, measurement methodology, date, and contract version, and for
+why a constant is the only thing a deployed contract *can* return here:
+`env.cost_estimate().budget()` — the API that number was itself measured
+with — lives under `soroban_sdk::testutils`, unavailable to the real wasm
+this contract compiles to. It's also the right shape for the function's
+purpose: self-measuring the real cost would cost as much as the
+simulation `estimate_cost()` exists to let callers skip.
+
+`getEstimatedVerifyCost` (SDK) wraps this as a quick, simulation-cheap
+instruction-count ballpark, distinct from `estimateVerifyFee`'s real,
+per-call fee quote — see the SDK's own Public API list above.
 
 ### Timelocked Verifying-Key Updates
 

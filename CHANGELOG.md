@@ -18,6 +18,18 @@ sense.
 
 ### Added
 
+- **contracts+sdk**: `estimate_cost() -> u64` on `contracts/verifier` — a
+  read-only view function returning a fixed, pre-measured instruction
+  count for a single `verify_proof` call (`ESTIMATED_VERIFY_COST`,
+  `26,897,863` as of this writing), for a quick, simulation-free fee
+  ballpark. It's a constant rather than a live measurement because a
+  deployed contract has no host function to introspect its own
+  instruction budget — `env.cost_estimate().budget()` is
+  `soroban_sdk::testutils`-only — and because self-measuring would cost
+  as much as the simulation this function exists to let callers skip. New
+  SDK `getEstimatedVerifyCost(opts): Promise<bigint>` wraps it; see
+  `docs/performance.md`'s "Estimated Verification Cost" section and
+  `docs/architecture.md`'s matching section (#141).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and

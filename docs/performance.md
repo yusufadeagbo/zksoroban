@@ -107,6 +107,45 @@ passes) while performing the length check once instead of twice, three
 times per `verify_proof`/per proof in `verify_batch` (`proof_a`,
 `proof_b`, `proof_c`).
 
+## Estimated Verification Cost (`estimate_cost`)
+
+[zksoroban#141](https://github.com/yusufadeagbo/zksoroban/issues/141) adds
+`estimate_cost() -> u64` — a read-only view function returning a fixed,
+pre-measured instruction count for a single `verify_proof` call, so a fee
+estimation tool can get a ballpark number without paying for a real
+`simulateTransaction` round-trip.
+
+**This is a hardcoded constant (`ESTIMATED_VERIFY_COST` in
+`contracts/verifier/src/lib.rs`), not something measured live on each
+call.** A Soroban contract has no host function to introspect its own
+instruction budget consumption from within a real (non-test) invocation —
+`env.cost_estimate().budget()`, the API the "CI Cost Regression Check"
+section below uses to produce this exact number, lives under
+`soroban_sdk::testutils` and is not part of what `contracts/verifier`
+compiles to for `wasm32v1-none`. A constant is also the right shape for
+what this function is *for*: running the real pairing check just to
+self-report its own cost would cost as much as the simulation it's meant
+to replace, defeating the entire point.
+
+| | |
+|---|---|
+| Value | `26,897,863` instructions |
+| Source | `contracts/verifier/baseline-cost.json`'s `instructions` field, as of this writing |
+| Methodology | Exactly `contracts/verifier/tests/cost_regression.rs`'s — see "CI Cost Regression Check" below |
+| Measured against | `contracts/verifier` `0.1.0` (`contracts/verifier/Cargo.toml` — unbumped per this repo's established practice of not versioning per-feature; see `docs/versioning.md`) |
+| Date | 2026-09-29 |
+
+`ESTIMATED_VERIFY_COST` is kept in sync with `baseline-cost.json` by
+hand: whenever `make update-verifier-cost-baseline` legitimately changes
+the baseline (a real, intentional cost change — see below), update this
+constant and the table above to match in the same PR.
+
+Because it's a constant, `estimate_cost()` cannot and does not vary with
+the caller, the specific proof supplied, or current network/resource
+pricing conditions — it is deliberately *not* a substitute for a real fee
+quote on a specific call. An application that needs an exact number
+still wants `estimateVerifyFee` (SDK) or a real `simulateTransaction`.
+
 ## CI Cost Regression Check
 
 [zksoroban#74](https://github.com/yusufadeagbo/zksoroban/issues/74) asked

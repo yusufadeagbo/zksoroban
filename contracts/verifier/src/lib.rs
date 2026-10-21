@@ -12,6 +12,25 @@ const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
 const CIRCUIT_PUBLIC_INPUT_COUNT: u32 = 1;
 const EXPECTED_PUBLIC_INPUT_COUNT: u32 = CIRCUIT_PUBLIC_INPUT_COUNT + 1;
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// `verify_proof`'s instruction cost against the `poseidon_preimage`
+/// fixture, as measured by `contracts/verifier/tests/cost_regression.rs`
+/// against the real compiled wasm (zksoroban#141) — see
+/// `contracts/verifier/baseline-cost.json`, which this is kept in sync
+/// with by hand (`make update-verifier-cost-baseline` refreshes the JSON
+/// file; update this constant to match whenever that changes), and
+/// `docs/performance.md`'s "Estimated Verification Cost" section for the
+/// exact measurement date and contract version this was captured at.
+///
+/// This is a hardcoded constant, not something `estimate_cost` measures
+/// live: a Soroban contract has no host function to introspect its own
+/// instruction budget consumption from within a production invocation —
+/// `env.cost_estimate().budget()`, which `cost_regression.rs` itself uses
+/// to produce this number, is part of `soroban_sdk::testutils`, gated out
+/// of the real wasm this contract compiles to. A constant is also the
+/// right answer for what `estimate_cost` is actually *for*: a cheap
+/// stand-in for a full simulation, which running the real pairing check
+/// just to self-report its own cost would defeat entirely.
+const ESTIMATED_VERIFY_COST: u64 = 26_897_863;
 
 #[contracttype]
 #[derive(Clone)]
@@ -129,6 +148,23 @@ impl VerifierContract {
 
     pub fn version(env: Env) -> String {
         String::from_str(&env, CONTRACT_VERSION)
+    }
+
+    /// Approximate CPU instruction cost of a single `verify_proof` call
+    /// (zksoroban#141) — a quick, simulation-free stand-in for an
+    /// application that just wants a ballpark fee estimate without paying
+    /// the cost of a real `simulateTransaction` round-trip. Read-only: no
+    /// auth required, no storage touched, callable with zero fees via
+    /// `simulateTransaction` the same as `get_config`/`verification_count`.
+    ///
+    /// This is a fixed, pre-measured constant (see `ESTIMATED_VERIFY_COST`
+    /// and `docs/performance.md`), not computed from this specific call —
+    /// it does not vary with the caller, the proof supplied, or current
+    /// network conditions. An application that needs an exact fee quote
+    /// for a specific call should still use `estimateVerifyFee` (SDK) /
+    /// a real `simulateTransaction`, which this never replaces.
+    pub fn estimate_cost(_env: Env) -> u64 {
+        ESTIMATED_VERIFY_COST
     }
 
     /// Number of times `verify_proof`/`verify_batch` has successfully

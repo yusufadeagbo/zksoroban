@@ -967,3 +967,92 @@ export async function getContractConfig(
     throw classified;
   }
 }
+
+// ---------------------------------------------------------------------------
+// getEstimatedVerifyCost — a quick, simulation-cheap instruction-count
+// estimate from contracts/verifier's estimate_cost() view function
+// ---------------------------------------------------------------------------
+
+/**
+ * Call `contracts/verifier`'s `estimate_cost()` view function and return its
+ * result: a fixed, pre-measured CPU instruction count for a single
+ * `verify_proof` call (zksoroban#141), not a fee.
+ *
+ * This is a *quick* estimate, not a precise one: `estimate_cost()` itself
+ * returns a hardcoded constant (see `docs/performance.md`'s "Estimated
+ * Verification Cost"), so the simulation this function runs is cheap (no
+ * proof bytes, no pairing check — just reading a constant back), but the
+ * number it returns does not vary with the caller, the specific proof, or
+ * current network conditions the way {@link estimateVerifyFee}'s real
+ * simulation does. Use this when an approximate, fast instruction-count
+ * ballpark is enough (e.g. a rough UI estimate before a user has even
+ * generated a proof); use {@link estimateVerifyFee} when the application
+ * needs an actual fee quote in stroops/XLM for a specific call.
+ *
+ * Like {@link getContractConfig}, this is simulation-only: no transaction
+ * is submitted, no fee is charged, and no `keypair` is required.
+ *
+ * @example
+ * ```ts
+ * const instructions = await getEstimatedVerifyCost({ network: TESTNET });
+ * console.log(`verify_proof costs roughly ${instructions} instructions`);
+ * ```
+ */
+export async function getEstimatedVerifyCost(opts: GetContractConfigOptions): Promise<bigint> {
+  const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
+
+  try {
+    const server = makeServer(opts.network, opts.retry);
+    logger.debug("getEstimatedVerifyCost", "getting network info");
+    const network = await server.getNetwork();
+    assertNetworkPassphrase(opts.network, network.passphrase);
+    const contract = new Contract(opts.network.contractId);
+
+    const ephemeral = Keypair.random();
+    let account: InstanceType<typeof import("@stellar/stellar-sdk").Account>;
+    try {
+      logger.debug("getEstimatedVerifyCost", "getting ephemeral account");
+      account = await server.getAccount(ephemeral.publicKey());
+    } catch {
+      account = new Account(ephemeral.publicKey(), "0");
+    }
+
+    const transaction = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: network.passphrase
+    })
+      .addOperation(contract.call("estimate_cost"))
+      .setTimeout(30)
+      .build();
+
+    logger.debug("getEstimatedVerifyCost", "simulating transaction");
+    const simResult = await server.simulateTransaction(transaction);
+
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new SorobanZkError(
+        `estimate_cost simulation failed: ${simResult.error}`,
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    if (!("result" in simResult) || !simResult.result) {
+      throw new SorobanZkError(
+        "estimate_cost simulation returned no result",
+        SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+      );
+    }
+
+    const instructions = BigInt(scValToNative(simResult.result.retval));
+    logger.info("getEstimatedVerifyCost", "cost estimate retrieved", { instructions: instructions.toString() });
+
+    return instructions;
+  } catch (error) {
+    if (error instanceof SorobanZkError) {
+      logger.error("getEstimatedVerifyCost", "operation failed", { code: error.code, message: error.message });
+      throw error;
+    }
+    const classified = classifyError(error);
+    logger.error("getEstimatedVerifyCost", "operation failed", { code: classified.code, message: classified.message });
+    throw classified;
+  }
+}
