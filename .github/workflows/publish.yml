@@ -19,9 +19,20 @@ jobs:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
 
+      # The SDK's contract types are generated from the compiled contract's
+      # own spec, so publishing needs the contract built first.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
       - run: npm ci
 
+      - name: Build verifier release wasm
+        run: cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release --locked
+
       - run: npm run lint --workspace=sdk
+
+      - run: npm run codegen:check --workspace=sdk
 
       - run: npm test --workspace=sdk
 

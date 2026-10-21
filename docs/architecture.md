@@ -93,7 +93,7 @@ Public API:
 - `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
-- `getContractConfig(opts): Promise<ContractConfig>`
+- `getContractConfig(opts): Promise<ContractConfig>` — the contract's own `ContractConfig` struct, field names included (see [Generated Contract Types](#generated-contract-types))
 - `getContractVersion(network, retry?): Promise<string>`
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
 
@@ -248,6 +248,49 @@ one, in this SDK.
 Any error `onProgress` itself throws is caught and discarded
 (`emitProofStage` in `types.ts`) — a broken progress callback must never
 abort the operation it's reporting on.
+
+### Generated Contract Types
+
+The SDK's view of `contracts/verifier` — its entry points, argument and
+return types, structs, events and error codes — is **generated from the
+contract itself**, not written by hand
+([zksoroban#30](https://github.com/yusufadeagbo/zksoroban/issues/30)).
+
+`soroban-sdk`'s macros embed a machine-readable contract spec in the
+compiled contract WASM (the `contractspecv0` custom section). `sdk/scripts/codegen.ts`
+reads that section, normalizes it (`sdk/scripts/contract-spec.ts`) and
+renders it as TypeScript (`sdk/scripts/render-contract-types.ts`) into
+`sdk/src/generated/contract.ts`:
+
+```sh
+cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release
+npm run codegen --workspace=sdk   # rewrite sdk/src/generated/contract.ts
+npm run codegen:check --workspace=sdk  # fail if the committed file is stale
+```
+
+The SDK's `build` script runs the generator before `tsc`, so a build always
+compiles against types that match the contract it was built with, and CI
+runs `codegen:check` so a contract change that nobody regenerated the
+types for fails the build instead of shipping a mismatch.
+
+The generated file exports:
+
+- `VerifierContract` — every entry point, with its argument and result types.
+- `<Function>Args` / `<Function>Result` — e.g. `VerifyProofArgs`,
+  `VerifyProofResult`.
+- The contract's structs (`ContractConfig`, `Limits`, `ProofItem`,
+  `VerifyingKey`) and events (`VerificationResultEvent`) as interfaces.
+- `VerifierError` / `VerifierErrorCode` — the contract's error codes.
+- `VERIFIER_FUNCTIONS` — the contract's function names, used at the SDK's
+  own call sites so a rename on the contract side breaks the build.
+
+Names match the contract exactly (snake_case), because they are also the
+XDR map keys on the wire. `Option<T>` maps to `T | undefined`, 64-bit and
+wider integers map to `bigint`, and byte values map to `Buffer`.
+
+The SDK's own hand-written types stay separate: `SorobanProofCalldata` is
+the SDK's camelCase input format, typed from the generated `ProofItem`
+rather than from a second, hand-copied list of field types.
 
 ## Contract Layer
 

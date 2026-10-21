@@ -18,6 +18,18 @@ sense.
 
 ### Added
 
+- **sdk**: the SDK's types for `contracts/verifier` are now **generated
+  from the contract itself** rather than maintained by hand. `npm run
+  codegen` (in `sdk/`) reads the contract's embedded Soroban contract spec
+  out of the compiled contract WASM and writes
+  `sdk/src/generated/contract.ts`, which exports `VerifierContract` (every
+  entry point with its argument and result types), the contract's structs
+  (`ContractConfig`, `Limits`, `ProofItem`, `VerifyingKey`) and events
+  (`VerificationResultEvent`), the contract's error codes
+  (`VerifierError`/`VerifierErrorCode`) and its function names
+  (`VERIFIER_FUNCTIONS`). `npm run build` regenerates it before `tsc`, and
+  `npm run codegen:check` fails if the committed file is out of date with
+  the contract — the same drift check CI runs (#30).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and
@@ -120,6 +132,16 @@ sense.
 
 ### Changed
 
+- **sdk, BREAKING**: `getContractConfig()` now returns the contract's own
+  `ContractConfig` struct exactly as the contract spec declares it, so its
+  fields are snake_case: `rateLimitMax` → `rate_limit_max`,
+  `rateLimitWindow` → `rate_limit_window`, `feeAmount` → `fee_amount`,
+  `feeToken` → `fee_token`, `timelockDelay` → `timelock_delay`,
+  `allowlistEnabled` → `allowlist_enabled`. `admin` and `paused` are
+  unchanged. The type is the generated one
+  (`sdk/src/generated/contract.ts`), so the SDK's view of the contract's
+  configuration can no longer drift from the contract's own. Fields the
+  contract does not implement are still `undefined` (#30).
 - **sdk, BREAKING**: every RPC-touching SDK function (`verifyOnChain`,
   `verifyBatchOnChain`, `verifyViaRegistry`, `verifyBatchViaRegistry`,
   `estimateVerifyFee`, `getContractConfig`, `getContractVersion`) now

@@ -132,7 +132,7 @@ if (!secretKey || !verifierContractId) {
     // sequential RPC round-trips (typically hundreds of ledgers or more).
     const config = await getContractConfig({ network });
 
-    for (let i = 0; i < config.rateLimitMax; i++) {
+    for (let i = 0; i < config.rate_limit_max; i++) {
       const calldata = formatProof(
         VALID_SNARKJS_PROOF,
         VALID_PUBLIC_SIGNALS,

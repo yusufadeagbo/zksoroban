@@ -12,7 +12,19 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      # The SDK's contract types are generated from the contract's own spec
+      # (see sdk/scripts/codegen.ts), so the SDK build needs the compiled
+      # contract — and the CI drift check needs it too.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
       - run: npm install
+      - name: Build verifier release wasm
+        run: cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release --locked
+      # Fails if sdk/src/generated/contract.ts is out of date with the
+      # contract it was generated from — i.e. if someone changed the contract
+      # (or the generator) without regenerating the SDK's types.
+      - run: npm run codegen:check --workspace=sdk
       - run: npm test --workspace=sdk
 
   demo:
@@ -22,7 +34,12 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
       - run: npm install
+      - name: Build verifier release wasm
+        run: cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release --locked
       - run: npm run build --workspace=sdk
       - run: npm run lint --workspace=demo
 

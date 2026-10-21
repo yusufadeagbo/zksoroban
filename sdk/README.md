@@ -6,6 +6,51 @@ verification against `contracts/verifier`/`contracts/registry`. See the
 [docs/architecture.md](../docs/architecture.md) for how this fits together
 with the contracts and circuits.
 
+## Generated contract types
+
+The SDK's view of `contracts/verifier` — every entry point, its arguments,
+its return type, the contract's structs and its error codes — is **generated
+from the contract itself**, not maintained by hand. The source of truth is
+the contract's embedded Soroban contract spec (the `contractspecv0` custom
+section of the compiled contract WASM), and the generated file is
+[`src/generated/contract.ts`](./src/generated/contract.ts).
+
+```sh
+# 1. build the contract (its spec lives in the compiled WASM)
+cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release
+
+# 2. regenerate the SDK's contract types
+npm run codegen
+```
+
+`npm run codegen` reads the compiled contract and rewrites
+`src/generated/contract.ts`. `npm run build` runs it automatically before
+`tsc`, so a normal SDK build always compiles against types that match the
+contract it was built with. `npm run codegen:check` regenerates in memory
+and fails if the committed file differs — that is the drift check CI runs,
+and `make codegen-check` runs it locally.
+
+Never edit `src/generated/contract.ts` by hand: the next `npm run codegen`
+overwrites it. Change the contract (or the generator) and regenerate instead.
+
+What the generated file gives you:
+
+- `VerifierContract` — every entry point, with its argument and result types.
+- `<Function>Args` / `<Function>Result` types, e.g. `VerifyProofArgs` and
+  `VerifyProofResult`.
+- The contract's structs as interfaces (`ContractConfig`, `Limits`,
+  `ProofItem`, `VerifyingKey`) and its events as interfaces
+  (`VerificationResultEvent`).
+- `VerifierError` — the contract's error codes, e.g.
+  `VerifierError.AlreadyUsed === 11`.
+- `VERIFIER_FUNCTIONS` — the contract's function names, so calling
+  `contract.call(VERIFIER_FUNCTIONS.verify_proof, …)` fails to compile if the
+  contract renames the function.
+
+Field names match the contract exactly (snake_case), because they are also
+the XDR map keys on the wire. `Option<T>` maps to `T | undefined`; `u64` and
+wider integers map to `bigint`; byte values map to `Buffer`.
+
 ## Testing
 
 ```sh

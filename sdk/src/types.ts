@@ -1,5 +1,6 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import type { LogHandler } from "./logger.js";
+import type { ProofItem, VerifyingKey } from "./generated/contract.js";
 
 /**
  * Progress stages reported during proof generation and/or on-chain
@@ -47,11 +48,19 @@ export interface SnarkjsProof {
   protocol: "groth16";
 }
 
+/**
+ * A proof in the shape `contracts/verifier` expects.
+ *
+ * The field *types* come from the generated contract types (see
+ * `sdk/src/generated/contract.ts`), so they always match the contract's own
+ * `ProofItem` struct; only the field *names* stay camelCase, because this
+ * is the SDK's own input format rather than the contract's wire format.
+ */
 export interface SorobanProofCalldata {
-  proofA: Buffer;
-  proofB: Buffer;
-  proofC: Buffer;
-  publicInputs: Buffer[];
+  proofA: ProofItem["proof_a"];
+  proofB: ProofItem["proof_b"];
+  proofC: ProofItem["proof_c"];
+  publicInputs: ProofItem["public_inputs"];
 }
 
 /**
@@ -59,6 +68,10 @@ export interface SorobanProofCalldata {
  * `contracts/registry`'s `register_circuit(id, vk)` expects — the same
  * BN254 G1/G2 point encoding {@link SorobanProofCalldata} uses for a proof,
  * applied to a verifying key's `alpha`/`beta`/`gamma`/`delta`/`IC` instead.
+ *
+ * `contracts/registry` declares its own `VerifyingKey` struct, so this type
+ * stays separate from the generated one — but the two must not drift apart,
+ * which the compile-time assertion at the bottom of this file enforces.
  */
 export interface RegistryVerifyingKey {
   alpha: Buffer;
@@ -422,30 +435,9 @@ export class NetworkMismatchError extends SorobanZkError {
   }
 }
 
-/**
- * A read-only snapshot of all non-sensitive verifier contract configuration
- * fields, as returned by the `get_config` contract function.
- *
- * Fields that the current contract does not implement (fee, timelock, etc.)
- * are returned as `undefined` / `false` so callers can detect at runtime
- * whether a feature is active without needing to know the contract version.
- */
-export interface ContractConfig {
-  /** Contract administrator Stellar address (G… or C…). */
-  admin: string;
-  /** Whether the contract is paused. Always `false` in the current version. */
-  paused: boolean;
-  /** Optional fee amount in stroops. `undefined` when not configured. */
-  feeAmount: bigint | undefined;
-  /** Optional fee token contract address. `undefined` when not configured. */
-  feeToken: string | undefined;
-  /** Maximum `verify_proof` calls allowed per caller per rate-limit window. */
-  rateLimitMax: number;
-  /** Rate-limit window size in ledgers. */
-  rateLimitWindow: number;
-  /** Timelock delay in ledgers. `undefined` when not configured. */
-  timelockDelay: number | undefined;
-  /** Whether an allowlist is enforced. Always `false` in the current version. */
-  allowlistEnabled: boolean;
-}
+// The registry contract's verifying key must stay structurally identical to
+// the verifier contract's, whose type is generated from the contract spec.
+// This assertion fails the build if the two ever diverge.
+type AssertAssignable<From extends To, To> = From;
+type _RegistryVerifyingKeyMatchesVerifier = AssertAssignable<RegistryVerifyingKey, VerifyingKey>;
 

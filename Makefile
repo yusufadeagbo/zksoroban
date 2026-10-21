@@ -1,4 +1,4 @@
-.PHONY: help install build build-contract build-sdk test test-contract test-sdk test-circuits lint demo clean verifier-cost-check update-verifier-cost-baseline
+.PHONY: help install build build-contract build-sdk codegen codegen-check test test-contract test-sdk test-circuits lint demo clean verifier-cost-check update-verifier-cost-baseline
 
 CIRCUIT_DIR := circuits/poseidon_preimage
 CIRCUIT_BUILD := $(CIRCUIT_DIR)/build
@@ -8,6 +8,8 @@ help:
 	@echo "zksoroban development targets"
 	@echo "  make install       Install SDK and demo npm dependencies"
 	@echo "  make build         Build the verifier contract and TypeScript SDK"
+	@echo "  make codegen       Regenerate the SDK's contract types from the built contract"
+	@echo "  make codegen-check Fail if the SDK's generated contract types are out of date"
 	@echo "  make test          Run contract, SDK, and circuit checks"
 	@echo "  make lint          Run Rust and TypeScript lint checks"
 	@echo "  make circuits      Compile and verify the reference circuit"
@@ -25,8 +27,16 @@ build: build-contract build-sdk
 build-contract:
 	cargo build --manifest-path $(CONTRACT_MANIFEST) --target wasm32v1-none --release
 
-build-sdk:
+# The SDK's build regenerates its contract types from the compiled contract,
+# so it needs the contract built first.
+build-sdk: build-contract
 	npm run build --prefix sdk
+
+codegen: build-contract
+	npm run codegen --prefix sdk
+
+codegen-check: build-contract
+	npm run codegen:check --prefix sdk
 
 test: test-contract test-sdk test-circuits
 
@@ -49,7 +59,7 @@ verifier-cost-check: build-contract
 update-verifier-cost-baseline: build-contract
 	UPDATE_COST_BASELINE=1 cargo test --manifest-path $(CONTRACT_MANIFEST) --test cost_regression -- --nocapture
 
-lint:
+lint: codegen-check
 	cargo fmt --manifest-path $(CONTRACT_MANIFEST) -- --check
 	cargo clippy --manifest-path $(CONTRACT_MANIFEST) --all-targets -- -D warnings
 	npm run lint --prefix sdk

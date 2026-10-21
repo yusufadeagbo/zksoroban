@@ -13,7 +13,8 @@ import test from "node:test";
 import { xdr, scValToNative, Keypair } from "@stellar/stellar-sdk";
 
 import { getContractConfig, GetContractConfigOptions } from "../src/verify";
-import { ContractConfig, SorobanZkError, SorobanZkErrorCode, TESTNET } from "../src/types";
+import { SorobanZkError, SorobanZkErrorCode, TESTNET } from "../src/types";
+import type { ContractConfig } from "../src/generated/contract";
 
 // ---------------------------------------------------------------------------
 // A stable deterministic admin address used in simulated results
@@ -117,10 +118,13 @@ test("getContractConfig maps rate-limit fields correctly", async () => {
   const retval = buildConfigScVal({ rate_limit_max: 7, rate_limit_window: 42 });
 
   await withStubbedServer(() => buildStub(makeSuccessSimResult(retval)), async () => {
-    const config = await getContractConfig(DEFAULT_OPTS);
+    // The return value is the contract's own generated `ContractConfig` type
+    // — annotated here so a change to the generated shape breaks this test's
+    // type-check, not just its assertions.
+    const config: ContractConfig = await getContractConfig(DEFAULT_OPTS);
 
-    assert.equal(config.rateLimitMax, 7, "rateLimitMax");
-    assert.equal(config.rateLimitWindow, 42, "rateLimitWindow");
+    assert.equal(config.rate_limit_max, 7, "rate_limit_max");
+    assert.equal(config.rate_limit_window, 42, "rate_limit_window");
   });
 });
 
@@ -131,10 +135,10 @@ test("getContractConfig maps unimplemented feature flags to absent/false", async
     const config = await getContractConfig(DEFAULT_OPTS);
 
     assert.equal(config.paused, false, "paused should default to false");
-    assert.equal(config.feeAmount, undefined, "feeAmount should be undefined");
-    assert.equal(config.feeToken, undefined, "feeToken should be undefined");
-    assert.equal(config.timelockDelay, undefined, "timelockDelay should be undefined");
-    assert.equal(config.allowlistEnabled, false, "allowlistEnabled should default to false");
+    assert.equal(config.fee_amount, undefined, "fee_amount should be undefined");
+    assert.equal(config.fee_token, undefined, "fee_token should be undefined");
+    assert.equal(config.timelock_delay, undefined, "timelock_delay should be undefined");
+    assert.equal(config.allowlist_enabled, false, "allowlist_enabled should default to false");
   });
 });
 
@@ -143,8 +147,8 @@ test("getContractConfig reflects updated limits (set_limits equivalent)", async 
 
   await withStubbedServer(() => buildStub(makeSuccessSimResult(retval)), async () => {
     const config = await getContractConfig(DEFAULT_OPTS);
-    assert.equal(config.rateLimitMax, 20);
-    assert.equal(config.rateLimitWindow, 200);
+    assert.equal(config.rate_limit_max, 20);
+    assert.equal(config.rate_limit_window, 200);
   });
 });
 

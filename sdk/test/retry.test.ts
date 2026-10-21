@@ -509,7 +509,7 @@ test("getContractConfig retries transient simulation failures when retry is enab
         retry: { maxRetries: 3, baseDelayMs: 1, jitter: false }
       });
 
-      assert.equal(config.rateLimitMax, 10);
+      assert.equal(config.rate_limit_max, 10);
       assert.equal(simulateCalls, 3, "two transient failures + one success");
     }
   );

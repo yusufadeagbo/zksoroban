@@ -14,8 +14,9 @@ import {
 import { withRetry } from "./retry.js";
 import { formatProof } from "./proof.js";
 import { createLogger, defaultLogger, Logger, LogHandler } from "./logger.js";
+import { VERIFIER_FUNCTIONS, VerifierError } from "./generated/contract.js";
+import type { ContractConfig } from "./generated/contract.js";
 import {
-  ContractConfig,
   emitProofStage,
   NetworkConfig,
   NetworkMismatchError,
@@ -99,13 +100,18 @@ function feeFromResult(result: xdr.TransactionResult): string {
 // typed SorobanZkErrorCode. Soroban tooling (simulation errors, stellar-cli)
 // renders a contract error as the literal substring `Error(Contract, #N)`,
 // so that's what we match against rather than parsing raw XDR.
+//
+// The numeric keys come from the generated contract types, so the mapping
+// follows the contract automatically: if the contract's error enum is
+// renumbered, the SDK's mapping follows it, and if a case disappears the
+// build breaks here instead of silently mis-mapping at runtime.
 const CONTRACT_ERROR_CODES: Record<number, SorobanZkErrorCode> = {
-  1: SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED,
-  2: SorobanZkErrorCode.RATE_LIMIT_EXCEEDED,
-  3: SorobanZkErrorCode.INVALID_WINDOW_SIZE,
-  4: SorobanZkErrorCode.PROOF_EXPIRED,
-  5: SorobanZkErrorCode.CALLER_NOT_ALLOWED,
-  11: SorobanZkErrorCode.ALREADY_USED
+  [VerifierError.NotInitialized]: SorobanZkErrorCode.CONTRACT_NOT_INITIALIZED,
+  [VerifierError.RateLimitExceeded]: SorobanZkErrorCode.RATE_LIMIT_EXCEEDED,
+  [VerifierError.InvalidWindowSize]: SorobanZkErrorCode.INVALID_WINDOW_SIZE,
+  [VerifierError.ProofExpired]: SorobanZkErrorCode.PROOF_EXPIRED,
+  [VerifierError.CallerNotAllowed]: SorobanZkErrorCode.CALLER_NOT_ALLOWED,
+  [VerifierError.AlreadyUsed]: SorobanZkErrorCode.ALREADY_USED
 };
 
 function extractContractErrorCode(message: string): SorobanZkErrorCode | undefined {
@@ -279,7 +285,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
     })
       .addOperation(
         contract.call(
-          "verify_proof",
+          VERIFIER_FUNCTIONS.verify_proof,
           callerScVal,
           makeBytesScVal(calldata.proofA),
           makeBytesScVal(calldata.proofB),
@@ -433,7 +439,7 @@ export async function verifyBatchOnChain(opts: VerifyBatchOptions): Promise<Veri
       fee: BASE_FEE,
       networkPassphrase: network.passphrase
     })
-      .addOperation(contract.call("verify_batch", callerScVal, batchScVal))
+      .addOperation(contract.call(VERIFIER_FUNCTIONS.verify_batch, callerScVal, batchScVal))
       .setTimeout(30)
       .build();
 
@@ -582,7 +588,7 @@ export async function estimateVerifyFee(opts: VerifyOptions): Promise<EstimateVe
     })
       .addOperation(
         contract.call(
-          "verify_proof",
+          VERIFIER_FUNCTIONS.verify_proof,
           callerScVal,
           makeBytesScVal(calldata.proofA),
           makeBytesScVal(calldata.proofB),
@@ -871,13 +877,19 @@ export interface GetContractConfigOptions {
  * Call the `get_config` view function on a deployed verifier contract and
  * return a typed {@link ContractConfig} object.
  *
+ * The returned object is the contract's own `ContractConfig` struct exactly
+ * as the contract spec declares it — snake_case field names and all — so it
+ * is a direct view of the contract's state rather than a re-shaped copy of
+ * it. Fields the contract does not implement (fee, timelock) come back as
+ * `undefined`, and Soroban's "absent" (`null`) is normalized to `undefined`.
+ *
  * This is a simulation-only call: no transaction is submitted, no fee is
  * charged, and no Keypair is required.
  *
  * @example
  * ```ts
  * const config = await getContractConfig({ network: TESTNET });
- * console.log(config.rateLimitMax, config.rateLimitWindow);
+ * console.log(config.rate_limit_max, config.rate_limit_window);
  * ```
  */
 export async function getContractConfig(
@@ -910,7 +922,7 @@ export async function getContractConfig(
       fee: BASE_FEE,
       networkPassphrase: network.passphrase
     })
-      .addOperation(contract.call("get_config"))
+      .addOperation(contract.call(VERIFIER_FUNCTIONS.get_config))
       .setTimeout(30)
       .build();
 
@@ -932,6 +944,9 @@ export async function getContractConfig(
     }
 
     // The SDK auto-decodes the XDR return value into a plain JS object.
+    // The shape is the contract's own `ContractConfig` struct, as generated
+    // from the contract spec — field names and all — so this function's
+    // return type cannot drift from what the contract actually returns.
     const raw = scValToNative(simResult.result.retval) as {
       admin: string;
       paused: boolean;
@@ -943,15 +958,15 @@ export async function getContractConfig(
       allowlist_enabled: boolean;
     };
 
-    const config = {
+    const config: ContractConfig = {
       admin: String(raw.admin),
       paused: Boolean(raw.paused),
-      feeAmount: raw.fee_amount != null ? BigInt(raw.fee_amount) : undefined,
-      feeToken: raw.fee_token != null ? String(raw.fee_token) : undefined,
-      rateLimitMax: Number(raw.rate_limit_max),
-      rateLimitWindow: Number(raw.rate_limit_window),
-      timelockDelay: raw.timelock_delay != null ? Number(raw.timelock_delay) : undefined,
-      allowlistEnabled: Boolean(raw.allowlist_enabled)
+      fee_amount: raw.fee_amount != null ? BigInt(raw.fee_amount) : undefined,
+      fee_token: raw.fee_token != null ? String(raw.fee_token) : undefined,
+      rate_limit_max: Number(raw.rate_limit_max),
+      rate_limit_window: Number(raw.rate_limit_window),
+      timelock_delay: raw.timelock_delay != null ? Number(raw.timelock_delay) : undefined,
+      allowlist_enabled: Boolean(raw.allowlist_enabled)
     };
 
     logger.info("getContractConfig", "config retrieved", { contractId: opts.network.contractId, admin: config.admin, paused: config.paused });
