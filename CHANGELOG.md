@@ -18,6 +18,19 @@ sense.
 
 ### Added
 
+- **sdk**: `subscribeToVerifications(opts): AsyncGenerator<VerificationEvent>`
+  — streams `contracts/verifier`'s `verification_result` events
+  (`success`, `caller`, `inputsHash`, `ledger`, `txHash`) via polled
+  `getEvents` (default 5s interval, configurable), instead of an
+  application polling `getTransaction` for one specific submission.
+  Events are sorted by `(ledger, transactionIndex, operationIndex)` before
+  being yielded, so ordering is guaranteed regardless of response order.
+  Standard `AsyncGenerator` cancellation (`break`/`.return()`) stops
+  polling cleanly. Scoped to `contracts/verifier` only, not
+  `contracts/registry` — registry's `verification_result` has no `caller`
+  field, but every `VerificationEvent` here has one, per the issue's own
+  acceptance criteria. See
+  [docs/architecture.md](docs/architecture.md#event-subscription) (#32).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and
