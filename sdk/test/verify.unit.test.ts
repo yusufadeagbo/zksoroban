@@ -13,6 +13,7 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 import { verifyOnChain } from "../src/verify";
 import {
   NetworkMismatchError,
+  ProofGenerationTimeout,
   SorobanZkError,
   SorobanZkErrorCode,
   TESTNET,
@@ -324,6 +325,59 @@ test("verifyOnChain falls back to a generic error for an unrecognized failure", 
           return true;
         }
       );
+    }
+  );
+});
+
+// timeoutMs (zksoroban#86).
+
+test("verifyOnChain rejects with ProofGenerationTimeout when the call is slower than timeoutMs", async () => {
+  await withStubbedServer(
+    () => ({
+      // A delayed mock of the first real network call -- stands in for
+      // "proof generation/submission takes too long" regardless of which
+      // specific step is slow.
+      getNetwork: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return { passphrase: STUB_PASSPHRASE };
+      },
+      getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
+      prepareTransaction: async (tx: any) => tx,
+      sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
+      getTransaction: async (): Promise<StubSuccessTx> => ({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        txHash: "b".repeat(64),
+        ledger: 12345,
+        resultXdr: buildTransactionResult(),
+        returnValue: xdr.ScVal.scvBool(true)
+      })
+    }),
+    async () => {
+      const started = Date.now();
+
+      await assert.rejects(
+        verifyOnChain({ ...DEFAULT_OPTS, timeoutMs: 20 }),
+        (err: unknown) => {
+          assert.ok(err instanceof ProofGenerationTimeout);
+          assert.ok(err instanceof SorobanZkError);
+          assert.equal(err.code, SorobanZkErrorCode.PROOF_GENERATION_TIMEOUT);
+          assert.equal(err.name, "ProofGenerationTimeout");
+          assert.equal(err.timeoutMs, 20);
+          return true;
+        }
+      );
+
+      assert.ok(Date.now() - started < 200, "should reject around the 20ms timeout, not wait out the 200ms stub");
+    }
+  );
+});
+
+test("verifyOnChain succeeds normally when no timeoutMs is given (no regression)", async () => {
+  await withStubbedServer(
+    () => buildSuccessStub({}, { returnValue: xdr.ScVal.scvBool(true) }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, true);
     }
   );
 });

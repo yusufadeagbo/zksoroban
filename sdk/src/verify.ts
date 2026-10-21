@@ -31,7 +31,8 @@ import {
   VerifyBatchViaRegistryOptions,
   VerifyOptions,
   VerifyResult,
-  VerifyViaRegistryOptions
+  VerifyViaRegistryOptions,
+  withTimeout
 } from "./types.js";
 import { validateCalldata } from "./validate.js";
 
@@ -257,118 +258,122 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
   logger.debug("verifyOnChain", "resolving calldata", { hasBundle: !!opts.bundle, hasCalldata: !!opts.calldata });
 
-  try {
-    emitProofStage(opts.onProgress, "submit_start");
-    const server = makeServer(opts.network, opts.retry);
-    logger.debug("verifyOnChain", "getting network info");
-    const network = await server.getNetwork();
-    assertNetworkPassphrase(opts.network, network.passphrase);
+  const work = (async (): Promise<VerifyResult> => {
+    try {
+      emitProofStage(opts.onProgress, "submit_start");
+      const server = makeServer(opts.network, opts.retry);
+      logger.debug("verifyOnChain", "getting network info");
+      const network = await server.getNetwork();
+      assertNetworkPassphrase(opts.network, network.passphrase);
 
-    if (opts.bundle) {
-      assertBundleNetwork(opts.bundle, network.passphrase);
-    }
-
-    logger.debug("verifyOnChain", "getting account", { publicKey: opts.keypair.publicKey() });
-    const account = await server.getAccount(opts.keypair.publicKey());
-    const contract = new Contract(opts.network.contractId);
-    const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
-
-    const transaction = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: network.passphrase
-    })
-      .addOperation(
-        contract.call(
-          "verify_proof",
-          callerScVal,
-          makeBytesScVal(calldata.proofA),
-          makeBytesScVal(calldata.proofB),
-          makeBytesScVal(calldata.proofC),
-          makePublicInputsScVal(calldata.publicInputs)
-        )
-      )
-      .setTimeout(30)
-      .build();
-
-    logger.debug("verifyOnChain", "preparing transaction");
-    const prepared = await server.prepareTransaction(transaction);
-    prepared.sign(opts.keypair);
-
-    logger.info("verifyOnChain", "submitting transaction", { contractId: opts.network.contractId });
-    const sendResult = await server.sendTransaction(prepared);
-    if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
-      throw new SorobanZkError(
-        `Transaction submission failed with status ${sendResult.status}`,
-        SorobanZkErrorCode.TRANSACTION_REJECTED
-      );
-    }
-
-    logger.debug("verifyOnChain", "transaction submitted", { txHash: sendResult.hash, status: sendResult.status });
-
-    const started = Date.now();
-    while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
-      logger.debug("verifyOnChain", "polling transaction status", { txHash: sendResult.hash });
-      const result = await server.getTransaction(sendResult.hash);
-
-      if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        continue;
+      if (opts.bundle) {
+        assertBundleNetwork(opts.bundle, network.passphrase);
       }
 
-      if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+      logger.debug("verifyOnChain", "getting account", { publicKey: opts.keypair.publicKey() });
+      const account = await server.getAccount(opts.keypair.publicKey());
+      const contract = new Contract(opts.network.contractId);
+      const callerScVal = new Address(opts.keypair.publicKey()).toScVal();
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: network.passphrase
+      })
+        .addOperation(
+          contract.call(
+            "verify_proof",
+            callerScVal,
+            makeBytesScVal(calldata.proofA),
+            makeBytesScVal(calldata.proofB),
+            makeBytesScVal(calldata.proofC),
+            makePublicInputsScVal(calldata.publicInputs)
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      logger.debug("verifyOnChain", "preparing transaction");
+      const prepared = await server.prepareTransaction(transaction);
+      prepared.sign(opts.keypair);
+
+      logger.info("verifyOnChain", "submitting transaction", { contractId: opts.network.contractId });
+      const sendResult = await server.sendTransaction(prepared);
+      if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
         throw new SorobanZkError(
-          `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
+          `Transaction submission failed with status ${sendResult.status}`,
           SorobanZkErrorCode.TRANSACTION_REJECTED
         );
       }
 
-      if (typeof result.ledger !== "number" || !result.resultXdr) {
-        throw new SorobanZkError(
-          `Transaction ${result.txHash} did not include the expected success payload`,
-          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
-        );
+      logger.debug("verifyOnChain", "transaction submitted", { txHash: sendResult.hash, status: sendResult.status });
+
+      const started = Date.now();
+      while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+        logger.debug("verifyOnChain", "polling transaction status", { txHash: sendResult.hash });
+        const result = await server.getTransaction(sendResult.hash);
+
+        if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          continue;
+        }
+
+        if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} failed on ledger ${result.ledger}`,
+            SorobanZkErrorCode.TRANSACTION_REJECTED
+          );
+        }
+
+        if (typeof result.ledger !== "number" || !result.resultXdr) {
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} did not include the expected success payload`,
+            SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+          );
+        }
+
+        const returnValue = decodeVerifyReturnValue(result);
+        if (typeof returnValue !== "boolean") {
+          throw new SorobanZkError(
+            `Transaction ${result.txHash} carried no decodable verify_proof return value`,
+            SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
+          );
+        }
+
+        const verifyResult = {
+          verified: returnValue,
+          txHash: result.txHash,
+          ledger: result.ledger,
+          fee: feeFromResult(result.resultXdr)
+        };
+
+        logger.info("verifyOnChain", "transaction confirmed", {
+          txHash: verifyResult.txHash,
+          ledger: verifyResult.ledger,
+          fee: verifyResult.fee,
+          verified: verifyResult.verified
+        });
+
+        emitProofStage(opts.onProgress, "submit_done");
+        return verifyResult;
       }
 
-      const returnValue = decodeVerifyReturnValue(result);
-      if (typeof returnValue !== "boolean") {
-        throw new SorobanZkError(
-          `Transaction ${result.txHash} carried no decodable verify_proof return value`,
-          SorobanZkErrorCode.CONTRACT_INVOCATION_FAILED
-        );
+      throw new SorobanZkError(
+        "Timed out waiting for transaction confirmation",
+        SorobanZkErrorCode.NETWORK_ERROR
+      );
+    } catch (error) {
+      if (error instanceof SorobanZkError) {
+        logger.error("verifyOnChain", "operation failed", { code: error.code, message: error.message });
+        throw error;
       }
 
-      const verifyResult = {
-        verified: returnValue,
-        txHash: result.txHash,
-        ledger: result.ledger,
-        fee: feeFromResult(result.resultXdr)
-      };
-
-      logger.info("verifyOnChain", "transaction confirmed", {
-        txHash: verifyResult.txHash,
-        ledger: verifyResult.ledger,
-        fee: verifyResult.fee,
-        verified: verifyResult.verified
-      });
-
-      emitProofStage(opts.onProgress, "submit_done");
-      return verifyResult;
+      const classified = classifyError(error);
+      logger.error("verifyOnChain", "operation failed", { code: classified.code, message: classified.message });
+      throw classified;
     }
+  })();
 
-    throw new SorobanZkError(
-      "Timed out waiting for transaction confirmation",
-      SorobanZkErrorCode.NETWORK_ERROR
-    );
-  } catch (error) {
-    if (error instanceof SorobanZkError) {
-      logger.error("verifyOnChain", "operation failed", { code: error.code, message: error.message });
-      throw error;
-    }
-
-    const classified = classifyError(error);
-    logger.error("verifyOnChain", "operation failed", { code: classified.code, message: classified.message });
-    throw classified;
-  }
+  return withTimeout(work, opts.timeoutMs);
 }
 
 // ---------------------------------------------------------------------------

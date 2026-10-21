@@ -8,9 +8,11 @@
 import {
   emitProofStage,
   OnProofProgress,
+  ProofGenerationTimeout,
   SnarkjsProof,
   SorobanZkError,
   SorobanZkErrorCode,
+  withTimeout,
   ZkInputError
 } from "./types.js";
 
@@ -64,6 +66,13 @@ export interface GenerateProofResult {
  * throws is caught and ignored — a broken progress callback must never
  * abort proof generation.
  *
+ * `timeoutMs`, if given (zksoroban#86), races the whole call — snarkjs's
+ * dynamic import included — against a timer, rejecting with
+ * {@link ProofGenerationTimeout} if it fires first. This does not stop the
+ * underlying WASM computation (no portable way to cancel it mid-flight,
+ * out of scope per the issue) — it only stops *waiting* for it. Omit for
+ * the previous, unbounded-wait behavior.
+ *
  * @example
  * ```ts
  * const wasm = new Uint8Array(await (await fetch("/circuit.wasm")).arrayBuffer());
@@ -78,7 +87,8 @@ export async function generateProof(
   commitment: bigint,
   wasm: Uint8Array,
   zkey: Uint8Array,
-  onProgress?: OnProofProgress
+  onProgress?: OnProofProgress,
+  timeoutMs?: number
 ): Promise<GenerateProofResult> {
   if (typeof secret !== "bigint") {
     throw new ZkInputError("secret", `must be a bigint (received ${typeof secret})`);
@@ -96,28 +106,32 @@ export async function generateProof(
     throw new ZkInputError("zkey", `must be a Uint8Array (received ${typeof zkey})`);
   }
 
-  const snarkjs: SnarkjsModule = await import("snarkjs");
+  const work = (async (): Promise<GenerateProofResult> => {
+    const snarkjs: SnarkjsModule = await import("snarkjs");
 
-  try {
-    const input = { secret: secret.toString(), commitment: commitment.toString() };
-    const wtns: SnarkjsMemWitness = { type: "mem" };
+    try {
+      const input = { secret: secret.toString(), commitment: commitment.toString() };
+      const wtns: SnarkjsMemWitness = { type: "mem" };
 
-    emitProofStage(onProgress, "witness_start");
-    await snarkjs.wtns.calculate(input, wasm, wtns);
-    emitProofStage(onProgress, "witness_done");
+      emitProofStage(onProgress, "witness_start");
+      await snarkjs.wtns.calculate(input, wasm, wtns);
+      emitProofStage(onProgress, "witness_done");
 
-    emitProofStage(onProgress, "proof_start");
-    const { proof, publicSignals } = await snarkjs.groth16.prove(zkey, wtns);
-    emitProofStage(onProgress, "proof_done");
+      emitProofStage(onProgress, "proof_start");
+      const { proof, publicSignals } = await snarkjs.groth16.prove(zkey, wtns);
+      emitProofStage(onProgress, "proof_done");
 
-    return { proof, publicSignals };
-  } catch (error) {
-    throw new SorobanZkError(
-      error instanceof Error ? error.message : String(error),
-      SorobanZkErrorCode.PROOF_GENERATION_FAILED
-    );
-  }
+      return { proof, publicSignals };
+    } catch (error) {
+      throw new SorobanZkError(
+        error instanceof Error ? error.message : String(error),
+        SorobanZkErrorCode.PROOF_GENERATION_FAILED
+      );
+    }
+  })();
+
+  return withTimeout(work, timeoutMs);
 }
 
-export { emitProofStage, SorobanZkError, SorobanZkErrorCode, ZkInputError };
+export { emitProofStage, ProofGenerationTimeout, SorobanZkError, SorobanZkErrorCode, ZkInputError };
 export type { OnProofProgress, ProofStage, SnarkjsProof } from "./types.js";

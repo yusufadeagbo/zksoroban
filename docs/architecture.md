@@ -86,9 +86,9 @@ Public API:
 - `poseidon(inputs: bigint[]): bigint`
 - `formatProof(proof, publicSignals): SorobanProofCalldata`
 - `formatVerifyingKey(vk): RegistryVerifyingKey`
-- `generateProof(secret, commitment, wasm, zkey, onProgress?): Promise<GenerateProofResult>` — `@zksoroban/sdk/browser` only (see below)
+- `generateProof(secret, commitment, wasm, zkey, onProgress?, timeoutMs?): Promise<GenerateProofResult>` — `@zksoroban/sdk/browser` only (see below)
 - `serializeProof(proof, publicSignals): Uint8Array` / `deserializeProof(bytes): { proof, publicSignals }`
-- `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction
+- `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction; `opts.timeoutMs` bounds the whole call (see "Timeouts" below)
 - `verifyViaRegistry(opts): Promise<boolean>` — `contracts/registry`, simulation-only
 - `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
@@ -248,6 +248,41 @@ one, in this SDK.
 Any error `onProgress` itself throws is caught and discarded
 (`emitProofStage` in `types.ts`) — a broken progress callback must never
 abort the operation it's reporting on.
+
+### Timeouts
+
+Per [zksoroban#86](https://github.com/yusufadeagbo/zksoroban/issues/86),
+`generateProof` (its own `timeoutMs` parameter) and `verifyOnChain` (via
+`VerifyOptions.timeoutMs`) accept an optional overall timeout in
+milliseconds. Omit it for the previous, unbounded-wait behavior — this is
+strictly additive.
+
+```ts
+try {
+  const proof = await generateProof(secret, commitment, wasm, zkey, undefined, 30_000);
+} catch (err) {
+  if (err.name === "ProofGenerationTimeout") {
+    console.log(`gave up after ${err.elapsedMs}ms (budget was ${err.timeoutMs}ms)`);
+  }
+}
+```
+
+Implemented via `withTimeout` (`types.ts`), a shared `Promise.race` against
+a timer: if the timer fires first, the call rejects with
+`ProofGenerationTimeout` (a `SorobanZkError` subclass,
+`code: SorobanZkErrorCode.PROOF_GENERATION_TIMEOUT`, with `timeoutMs` and
+`elapsedMs` fields). This does **not** cancel the work already in
+progress — `generateProof`'s WASM computation and `verifyOnChain`'s
+in-flight RPC call both keep running in the background; `withTimeout` only
+stops *waiting* for them, attaching a no-op `.catch()` to the losing side
+so a late rejection from abandoned work never surfaces as an unhandled
+rejection. Out of scope per the issue: there's no portable way to actually
+cancel snarkjs's WASM execution mid-flight.
+
+`verifyOnChain`'s `timeoutMs` is a budget for the *entire* call — build,
+submit, and poll — distinct from its own internal, fixed 30s poll-loop
+timeout (`DEFAULT_TIMEOUT_MS` in `verify.ts`), which is unaffected by this
+option and still applies underneath it.
 
 ## Contract Layer
 
