@@ -18,6 +18,17 @@ sense.
 
 ### Added
 
+- **sdk**: optional `timeoutMs` on `generateProof` (`@zksoroban/sdk/browser`)
+  and `verifyOnChain` (via `VerifyOptions.timeoutMs`) — races the whole
+  call against a timer (`withTimeout` in `types.ts`), rejecting with the
+  new `ProofGenerationTimeout` error (`SorobanZkErrorCode
+  .PROOF_GENERATION_TIMEOUT`, with `timeoutMs`/`elapsedMs` fields) if it
+  fires first. Does not cancel in-progress work — no portable way to
+  cancel snarkjs's WASM execution, out of scope per the issue — only stops
+  waiting for it; a no-op `.catch()` on the losing side prevents a later
+  rejection from the abandoned work surfacing as unhandled. Omitting it
+  keeps the previous, unbounded-wait behavior exactly. See
+  [docs/architecture.md](docs/architecture.md#timeouts) (#86).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and

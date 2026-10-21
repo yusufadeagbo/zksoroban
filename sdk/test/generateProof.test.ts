@@ -18,7 +18,7 @@ import test from "node:test";
 
 import { generateProof } from "../src/browser";
 import { poseidon } from "../src/poseidon";
-import { SorobanZkError, SorobanZkErrorCode, ZkInputError } from "../src/types";
+import { ProofGenerationTimeout, SorobanZkError, SorobanZkErrorCode, ZkInputError } from "../src/types";
 
 const CIRCUIT_DIR = path.resolve(__dirname, "../../circuits/poseidon_preimage");
 const WASM_PATH = path.join(CIRCUIT_DIR, "build/circuit_js/circuit.wasm");
@@ -130,5 +130,22 @@ if (!fs.existsSync(WASM_PATH)) {
 
     assert.equal(proof.protocol, "groth16");
     assert.deepEqual(publicSignals, [commitment.toString()]);
+  });
+
+  test("generateProof rejects with ProofGenerationTimeout when timeoutMs is unrealistically short (zksoroban#86)", async () => {
+    const { wasm, zkey } = loadCircuitBytes();
+    const secret = 12345n;
+    const commitment = poseidon([secret]);
+
+    await assert.rejects(
+      generateProof(secret, commitment, wasm, zkey, undefined, 1),
+      (err: unknown) => {
+        assert.ok(err instanceof ProofGenerationTimeout);
+        assert.ok(err instanceof SorobanZkError);
+        assert.equal(err.code, SorobanZkErrorCode.PROOF_GENERATION_TIMEOUT);
+        assert.equal(err.timeoutMs, 1);
+        return true;
+      }
+    );
   });
 }

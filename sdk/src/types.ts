@@ -240,6 +240,18 @@ export interface VerifyOptions {
    * two calls.
    */
   onProgress?: OnProofProgress;
+  /**
+   * Optional overall timeout in milliseconds (zksoroban#86), honored by
+   * {@link verifyOnChain}: the whole call — building, submitting, and
+   * polling for the transaction — races against this timer, rejecting
+   * with {@link ProofGenerationTimeout} if it fires first. Distinct from
+   * `verifyOnChain`'s own internal poll-loop timeout (a fixed 30s,
+   * unaffected by this option) — this is a caller-chosen budget for the
+   * *entire* call, which can be shorter or longer than that. Omit for the
+   * previous, unbounded-wait behavior. Not honored by
+   * {@link estimateVerifyFee}, which shares this options type.
+   */
+  timeoutMs?: number;
 }
 
 export interface VerifyResult {
@@ -386,7 +398,14 @@ export enum SorobanZkErrorCode {
   // from "this data is just garbage/truncated" — a real, actionable
   // difference for an application deciding how to react.
   SERIALIZED_PROOF_VERSION_MISMATCH = "SERIALIZED_PROOF_VERSION_MISMATCH",
-  CORRUPTED_SERIALIZED_PROOF = "CORRUPTED_SERIALIZED_PROOF"
+  CORRUPTED_SERIALIZED_PROOF = "CORRUPTED_SERIALIZED_PROOF",
+  // A caller-supplied timeoutMs elapsed before generateProof/verifyOnChain
+  // finished (zksoroban#86) — distinct from PROOF_GENERATION_FAILED (the
+  // computation itself failed) and NETWORK_ERROR (verifyOnChain's own
+  // internal poll-loop timeout): this one means "the caller's own budget
+  // ran out," not that anything was actually wrong with the proof or the
+  // network.
+  PROOF_GENERATION_TIMEOUT = "PROOF_GENERATION_TIMEOUT"
 }
 
 export class SorobanZkError extends Error {
@@ -420,6 +439,65 @@ export class NetworkMismatchError extends SorobanZkError {
     );
     this.name = "NetworkMismatchError";
   }
+}
+
+/**
+ * Thrown by `generateProof` and {@link verifyOnChain} when a caller-supplied
+ * `timeoutMs` elapses before the operation finishes (zksoroban#86).
+ * `elapsedMs` is always `>= timeoutMs` (it's measured when the timeout
+ * actually fires, not the configured budget itself).
+ *
+ * This does not stop whatever work was in progress — `generateProof`'s
+ * WASM computation and `verifyOnChain`'s in-flight RPC call both keep
+ * running in the background after this rejects (the issue's own scope
+ * explicitly excludes WASM worker cancellation, which there's no portable
+ * way to do) — it only stops *waiting* for that work and reports the
+ * caller's own time budget ran out.
+ */
+export class ProofGenerationTimeout extends SorobanZkError {
+  constructor(
+    public timeoutMs: number,
+    public elapsedMs: number
+  ) {
+    super(
+      `Operation exceeded its ${timeoutMs}ms timeout (elapsed: ${elapsedMs}ms)`,
+      SorobanZkErrorCode.PROOF_GENERATION_TIMEOUT
+    );
+    this.name = "ProofGenerationTimeout";
+  }
+}
+
+/**
+ * Races `promise` against a `timeoutMs` timer, rejecting with
+ * {@link ProofGenerationTimeout} if the timer fires first. A no-op
+ * passthrough when `timeoutMs` is `undefined` — the default, unchanged
+ * behavior (zksoroban#86's explicit acceptance criterion).
+ *
+ * Whichever side of the race loses is cleaned up: the timer is cleared if
+ * `promise` wins, and a no-op `.catch()` is attached to `promise` if the
+ * timeout wins, so a `promise` that later rejects on its own (after the
+ * caller has already moved on) doesn't surface as an unhandled rejection.
+ */
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) {
+    return promise;
+  }
+
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout>;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new ProofGenerationTimeout(timeoutMs, Date.now() - started));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timer);
+    promise.catch(() => {
+      // Deliberately ignored — see this function's own doc comment.
+    });
+  });
 }
 
 /**
