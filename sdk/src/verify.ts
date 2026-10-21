@@ -218,14 +218,17 @@ export function assertBundleNetwork(bundle: ProofBundle, networkPassphrase: stri
 // -- exactly the class of rpcUrl/networkPassphrase/contractId mix-up
 // centralizing this config is meant to prevent, caught before a
 // transaction is ever built rather than failing less obviously downstream.
-function makeServer(network: NetworkConfig, retry?: RetryOptions) {
+// Exported for subscribe.ts (zksoroban#32) to reuse — every RPC-touching
+// module should build its server and validate the network the same way,
+// not just the request/response functions in this file.
+export function makeServer(network: NetworkConfig, retry?: RetryOptions) {
   return withRetry(
     new rpc.Server(network.rpcUrl, { allowHttp: network.rpcUrl.startsWith("http://") }),
     retry
   );
 }
 
-function assertNetworkPassphrase(network: NetworkConfig, actualPassphrase: string): void {
+export function assertNetworkPassphrase(network: NetworkConfig, actualPassphrase: string): void {
   if (network.networkPassphrase !== actualPassphrase) {
     throw new NetworkMismatchError(
       network.networkPassphrase,

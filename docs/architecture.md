@@ -95,6 +95,7 @@ Public API:
 - `estimateVerifyFee(opts): Promise<EstimateVerifyFeeResult>`
 - `getContractConfig(opts): Promise<ContractConfig>`
 - `getContractVersion(network, retry?): Promise<string>`
+- `subscribeToVerifications(opts): AsyncGenerator<VerificationEvent>` — streams `contracts/verifier`'s `verification_result` events via polled `getEvents` (see "Event Subscription" below)
 - `withRetry` / `RetryOptions` — opt-in exponential-backoff retries for transient RPC failures (see below)
 
 See [Batch Verification](#batch-verification) below for the two batch functions.
@@ -469,6 +470,53 @@ practical `no_std` Rust port. Since this hash only feeds off-chain indexers
 and monitoring — it is never re-consumed by a circuit or checked
 in-contract — Poseidon's SNARK-friendliness has no benefit here, so sha256
 was used instead.
+
+### Event Subscription
+
+Per [zksoroban#32](https://github.com/yusufadeagbo/zksoroban/issues/32),
+`subscribeToVerifications(opts)` streams `contracts/verifier`'s
+`verification_result` events as an `AsyncGenerator<VerificationEvent>`,
+instead of an application polling `getTransaction` itself for one specific
+submission's outcome:
+
+```ts
+import { subscribeToVerifications, TESTNET } from "@zksoroban/sdk";
+
+for await (const event of subscribeToVerifications({ network: TESTNET })) {
+  console.log(event.success, event.caller, event.txHash);
+}
+```
+
+Deliberately scoped to `contracts/verifier` only, not `contracts/registry`:
+the table above shows registry's `verification_result` has no `caller`
+field (its `verify_proof(id, ...)` takes no caller/auth argument), but the
+issue's own acceptance criteria requires every `VerificationEvent` to carry
+one — so this is written against the verifier's event shape specifically,
+not a generic one for both contracts.
+
+Soroban RPC has no push/WebSocket transport for events (out of scope per
+the issue) — this is genuinely `getEvents` polling under the hood, on a
+configurable interval (`pollIntervalMs`, default 5s). The first poll uses
+`startLedger` (explicit, or the latest ledger at subscription time if
+omitted — i.e. new events only, not a replay of history); every poll after
+that uses the `cursor` the previous response returned, Soroban RPC's own
+pagination mechanism. Returned events are sorted by `(ledger,
+transactionIndex, operationIndex)` before being yielded, so ordering holds
+regardless of what order a single response happens to list them in.
+
+Termination is the standard `AsyncGenerator` protocol, not a custom API: a
+`for await` loop's `break`, or an explicit `.return()` on the iterator,
+resumes the generator at its current `await`/`yield` checkpoint as if a
+`return` executed there, so the loop does not poll again afterward. An
+in-flight `getEvents` call already underway when cancellation happens is
+not aborted — its result is simply never acted on, since nothing resumes
+the generator to look at it.
+
+Replaying history is bounded by whatever retention window the connected
+RPC provider enforces (commonly on the order of the last ~1000 ledgers,
+per the issue's own out-of-scope note) — `getEvents` itself rejects a
+`startLedger` older than that with its own error; this function does not
+attempt to work around it.
 
 ### Why the allowlist/rate-limit/expiry rejections in `contracts/verifier` don't emit an event
 
