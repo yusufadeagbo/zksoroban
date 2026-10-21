@@ -68,6 +68,15 @@ enum DataKey {
     PendingVkUpdate,
     Paused,
     Nullifier(BytesN<32>),
+    /// Total number of nullifiers ever recorded (zksoroban#85) —
+    /// monotonically increasing, never reset. Doubles as the next
+    /// insertion index into `NullifierAt`.
+    NullifierCount,
+    /// The `index`-th nullifier ever recorded, `0..NullifierCount`, in
+    /// insertion order — a separate, enumerable list alongside the
+    /// `Nullifier(BytesN<32>)` lookup map above, which answers "has this
+    /// exact nullifier been used" but can't be iterated.
+    NullifierAt(u32),
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -145,6 +154,46 @@ impl VerifierContract {
             .instance()
             .get(&DataKey::VerificationCount(commitment))
             .unwrap_or(0)
+    }
+
+    /// Total number of used nullifiers recorded so far (zksoroban#85) — the
+    /// length of the list `list_nullifiers` paginates over.
+    pub fn nullifier_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NullifierCount)
+            .unwrap_or(0)
+    }
+
+    /// Up to `limit` used nullifiers starting at `offset`, in insertion
+    /// order (zksoroban#85) — lets an off-chain indexer sync the full
+    /// nullifier set by paging through it, instead of scanning every
+    /// transaction. Returns an empty vec, not an error, once `offset` is
+    /// at or past `nullifier_count()`. Read-only: no auth required, no
+    /// state mutated.
+    pub fn list_nullifiers(env: Env, offset: u32, limit: u32) -> Vec<BytesN<32>> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NullifierCount)
+            .unwrap_or(0);
+
+        let mut results = Vec::new(&env);
+        if offset >= count {
+            return results;
+        }
+
+        let take = core::cmp::min(limit, count - offset);
+        for i in 0..take {
+            let nullifier: BytesN<32> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::NullifierAt(offset + i))
+                .expect("an index within nullifier_count() must have been written");
+            results.push_back(nullifier);
+        }
+
+        results
     }
 
     pub fn set_limits(env: Env, max_calls: u32, window_size: u32) -> Result<(), Error> {
@@ -580,6 +629,7 @@ fn verify_one(env: &Env, caller: &Address, item: &ProofItem) -> Result<bool, Err
     if verified {
         let commitment = compute_inputs_hash(env, &item.public_inputs);
         record_verification_attempt(env, &commitment);
+        record_nullifier(env, &nullifier);
         env.storage()
             .persistent()
             .set(&DataKey::Nullifier(nullifier), &true);
@@ -624,6 +674,31 @@ fn record_verification_attempt(env: &Env, commitment: &BytesN<32>) {
     let current: u64 = env.storage().instance().get(&key).unwrap_or(0);
     let next = current + 1;
     env.storage().instance().set(&key, &next);
+}
+
+/// Append `nullifier` to the enumerable, insertion-ordered nullifier list
+/// (zksoroban#85), alongside the `Nullifier(BytesN<32>)` lookup map's own
+/// write in the same `if verified` block this is called from. O(1): one
+/// slot write plus the counter write, regardless of how many nullifiers
+/// have been recorded so far.
+///
+/// Growth here is bounded the same way `Nullifier`/`VerificationCount`
+/// already are (see `docs/security.md` findings #11/#14): an entry can
+/// only be created by an actual successful pairing check on a real,
+/// fee-paying transaction, not minted for free.
+fn record_nullifier(env: &Env, nullifier: &BytesN<32>) {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::NullifierCount)
+        .unwrap_or(0);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::NullifierAt(count), nullifier);
+    env.storage()
+        .instance()
+        .set(&DataKey::NullifierCount, &(count + 1));
 }
 
 /// Derives a proof's nullifier from `proof_a`'s raw bytes for replay
