@@ -6,11 +6,13 @@
 // verify.ts, poseidon.ts and cli.ts stay out: they read files or shell out
 // via Node-only APIs and don't belong in a browser bundle.
 import {
+  AbortError,
   emitProofStage,
   OnProofProgress,
   SnarkjsProof,
   SorobanZkError,
   SorobanZkErrorCode,
+  throwIfAborted,
   ZkInputError
 } from "./types.js";
 
@@ -64,6 +66,15 @@ export interface GenerateProofResult {
  * throws is caught and ignored — a broken progress callback must never
  * abort proof generation.
  *
+ * `signal`, if given (zksoroban#100), is checked before witness computation
+ * starts and again before proving starts — the same `fetch`-style
+ * cancellation {@link verifyOnChain} supports. If already aborted when this
+ * function is called, it rejects with {@link AbortError} before doing any
+ * work at all. There's no way to cancel snarkjs's WASM execution itself
+ * once a stage has actually started (out of scope for zksoroban#100 — WASM
+ * worker cancellation isn't natively supported), so an abort mid-stage is
+ * only noticed at the next checkpoint, not instantly.
+ *
  * @example
  * ```ts
  * const wasm = new Uint8Array(await (await fetch("/circuit.wasm")).arrayBuffer());
@@ -78,7 +89,8 @@ export async function generateProof(
   commitment: bigint,
   wasm: Uint8Array,
   zkey: Uint8Array,
-  onProgress?: OnProofProgress
+  onProgress?: OnProofProgress,
+  signal?: AbortSignal
 ): Promise<GenerateProofResult> {
   if (typeof secret !== "bigint") {
     throw new ZkInputError("secret", `must be a bigint (received ${typeof secret})`);
@@ -96,22 +108,30 @@ export async function generateProof(
     throw new ZkInputError("zkey", `must be a Uint8Array (received ${typeof zkey})`);
   }
 
+  throwIfAborted(signal);
+
   const snarkjs: SnarkjsModule = await import("snarkjs");
 
   try {
     const input = { secret: secret.toString(), commitment: commitment.toString() };
     const wtns: SnarkjsMemWitness = { type: "mem" };
 
+    throwIfAborted(signal);
     emitProofStage(onProgress, "witness_start");
     await snarkjs.wtns.calculate(input, wasm, wtns);
     emitProofStage(onProgress, "witness_done");
 
+    throwIfAborted(signal);
     emitProofStage(onProgress, "proof_start");
     const { proof, publicSignals } = await snarkjs.groth16.prove(zkey, wtns);
     emitProofStage(onProgress, "proof_done");
 
     return { proof, publicSignals };
   } catch (error) {
+    if (error instanceof AbortError) {
+      throw error;
+    }
+
     throw new SorobanZkError(
       error instanceof Error ? error.message : String(error),
       SorobanZkErrorCode.PROOF_GENERATION_FAILED
@@ -119,5 +139,5 @@ export async function generateProof(
   }
 }
 
-export { emitProofStage, SorobanZkError, SorobanZkErrorCode, ZkInputError };
+export { AbortError, emitProofStage, SorobanZkError, SorobanZkErrorCode, ZkInputError };
 export type { OnProofProgress, ProofStage, SnarkjsProof } from "./types.js";

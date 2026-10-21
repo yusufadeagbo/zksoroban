@@ -18,6 +18,17 @@ sense.
 
 ### Added
 
+- **sdk**: optional `signal: AbortSignal` on `verifyOnChain` (via
+  `VerifyOptions.signal`) and `generateProof` (`@zksoroban/sdk/browser`),
+  the same cancellation pattern `fetch` uses. Checked at every checkpoint
+  between async steps, including (abort-aware) between `verifyOnChain`'s
+  poll attempts, so an in-flight call stops at the next checkpoint instead
+  of running to completion; an already-aborted `signal` rejects
+  immediately with no work done. Both reject/throw `AbortError` — a new
+  `SorobanZkError` subclass (`SorobanZkErrorCode.ABORTED`) with
+  `name: "AbortError"` set, for the same `err.name === "AbortError"`
+  detection `fetch`'s own abort exception supports. See
+  [docs/architecture.md](docs/architecture.md#cancellation) (#100).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and

@@ -18,7 +18,7 @@ import test from "node:test";
 
 import { generateProof } from "../src/browser";
 import { poseidon } from "../src/poseidon";
-import { SorobanZkError, SorobanZkErrorCode, ZkInputError } from "../src/types";
+import { AbortError, SorobanZkError, SorobanZkErrorCode, ZkInputError } from "../src/types";
 
 const CIRCUIT_DIR = path.resolve(__dirname, "../../circuits/poseidon_preimage");
 const WASM_PATH = path.join(CIRCUIT_DIR, "build/circuit_js/circuit.wasm");
@@ -63,11 +63,33 @@ test("the browser entry point exports generateProof and the shared error types, 
   const browserEntry = await import("../src/browser");
 
   assert.ok("generateProof" in browserEntry, "generateProof exported");
+  assert.ok("AbortError" in browserEntry, "AbortError exported");
   assert.ok("SorobanZkError" in browserEntry, "SorobanZkError exported");
   assert.ok("SorobanZkErrorCode" in browserEntry, "SorobanZkErrorCode exported");
   assert.ok("ZkInputError" in browserEntry, "ZkInputError exported");
   assert.ok(!("poseidon" in browserEntry), "poseidon (fs-based) is not exported from the browser entry");
   assert.ok(!("verifyOnChain" in browserEntry), "verifyOnChain (@stellar/stellar-sdk) is not exported from the browser entry");
+});
+
+// AbortSignal support (zksoroban#100).
+
+test("generateProof rejects immediately with AbortError when signal is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  // Placeholder wasm/zkey bytes are fine here: throwIfAborted runs before
+  // the dynamic `import("snarkjs")` and before any real witness/proving
+  // work, so this never actually touches snarkjs.
+  await assert.rejects(
+    generateProof(1n, 1n, new Uint8Array(), new Uint8Array(), undefined, controller.signal),
+    (err: unknown) => {
+      assert.ok(err instanceof AbortError);
+      assert.ok(err instanceof SorobanZkError);
+      assert.equal(err.code, SorobanZkErrorCode.ABORTED);
+      assert.equal((err as Error).name, "AbortError");
+      return true;
+    }
+  );
 });
 
 if (!fs.existsSync(WASM_PATH)) {

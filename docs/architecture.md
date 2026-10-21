@@ -86,9 +86,9 @@ Public API:
 - `poseidon(inputs: bigint[]): bigint`
 - `formatProof(proof, publicSignals): SorobanProofCalldata`
 - `formatVerifyingKey(vk): RegistryVerifyingKey`
-- `generateProof(secret, commitment, wasm, zkey, onProgress?): Promise<GenerateProofResult>` — `@zksoroban/sdk/browser` only (see below)
+- `generateProof(secret, commitment, wasm, zkey, onProgress?, signal?): Promise<GenerateProofResult>` — `@zksoroban/sdk/browser` only (see below)
 - `serializeProof(proof, publicSignals): Uint8Array` / `deserializeProof(bytes): { proof, publicSignals }`
-- `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction
+- `verifyOnChain(opts): Promise<VerifyResult>` — `contracts/verifier`, signed transaction; `opts.signal` cancels an in-flight call (see "Cancellation" below)
 - `verifyViaRegistry(opts): Promise<boolean>` — `contracts/registry`, simulation-only
 - `verifyBatchOnChain(opts): Promise<VerifyBatchResult>` — `contracts/verifier`, batched, signed transaction
 - `verifyBatchViaRegistry(opts): Promise<boolean[]>` — `contracts/registry`, batched, simulation-only
@@ -248,6 +248,46 @@ one, in this SDK.
 Any error `onProgress` itself throws is caught and discarded
 (`emitProofStage` in `types.ts`) — a broken progress callback must never
 abort the operation it's reporting on.
+
+### Cancellation
+
+Per [zksoroban#100](https://github.com/yusufadeagbo/zksoroban/issues/100),
+`verifyOnChain` (via `VerifyOptions.signal`) and `generateProof` (its own
+`signal` parameter, `@zksoroban/sdk/browser` only) accept a standard
+`AbortSignal` — the same cancellation pattern `fetch` uses:
+
+```ts
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000); // give up after 5s
+
+try {
+  const result = await verifyOnChain({ network, keypair, bundle, signal: controller.signal });
+} catch (err) {
+  if (err.name === "AbortError") {
+    // cancelled — distinct from a real network/contract failure
+  }
+}
+```
+
+Cancellation is cooperative, not preemptive: there's no way to actually
+interrupt an RPC request already in flight or a `snarkjs` WASM call
+already running (out of scope per the issue — WASM worker cancellation
+isn't natively supported). Instead, `signal` is checked at every natural
+checkpoint between steps — before each RPC call in `verifyOnChain`, and
+before each of `generateProof`'s two stages — so an abort takes effect at
+the next checkpoint rather than only after the whole call finishes. The
+one exception is `verifyOnChain`'s poll loop: the wait between poll
+attempts is itself abort-aware (an internal `delay()` helper that listens
+for the `abort` event), so an abort fired mid-wait is noticed immediately
+rather than only at the start of the next poll.
+
+Both functions throw/reject with `AbortError` — a named `SorobanZkError`
+subclass (`code: SorobanZkErrorCode.ABORTED`) with `name: "AbortError"`
+set explicitly, so callers can check `err.name === "AbortError"` the same
+standard way they'd detect `fetch`'s own abort exception, without needing
+to import the class for an `instanceof` check. If `signal` is already
+aborted when either function is called, it rejects immediately without
+doing any work — no RPC call, no `snarkjs` import.
 
 ## Contract Layer
 

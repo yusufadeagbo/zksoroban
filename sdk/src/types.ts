@@ -240,6 +240,17 @@ export interface VerifyOptions {
    * two calls.
    */
   onProgress?: OnProofProgress;
+  /**
+   * Optional cancellation signal (zksoroban#100), honored by
+   * {@link verifyOnChain} the same way `fetch` honors one: if already
+   * aborted, `verifyOnChain` rejects with {@link AbortError} before doing
+   * any work; if it fires while a call is in progress, the call stops at
+   * its next checkpoint (notably, between RPC-polling attempts) and
+   * rejects with {@link AbortError} instead of continuing. Not honored by
+   * {@link estimateVerifyFee}, which shares this options type but has no
+   * polling loop to cancel.
+   */
+  signal?: AbortSignal;
 }
 
 export interface VerifyResult {
@@ -386,7 +397,11 @@ export enum SorobanZkErrorCode {
   // from "this data is just garbage/truncated" — a real, actionable
   // difference for an application deciding how to react.
   SERIALIZED_PROOF_VERSION_MISMATCH = "SERIALIZED_PROOF_VERSION_MISMATCH",
-  CORRUPTED_SERIALIZED_PROOF = "CORRUPTED_SERIALIZED_PROOF"
+  CORRUPTED_SERIALIZED_PROOF = "CORRUPTED_SERIALIZED_PROOF",
+  // A caller-supplied AbortSignal was already aborted, or fired mid-call
+  // (zksoroban#100) — distinct from every other code above, none of which
+  // represent the caller itself asking to stop.
+  ABORTED = "ABORTED"
 }
 
 export class SorobanZkError extends Error {
@@ -419,6 +434,37 @@ export class NetworkMismatchError extends SorobanZkError {
       SorobanZkErrorCode.NETWORK_MISMATCH
     );
     this.name = "NetworkMismatchError";
+  }
+}
+
+/**
+ * Thrown by {@link verifyOnChain} and `generateProof` (from
+ * `@zksoroban/sdk/browser`) when the caller-supplied `signal` was already
+ * aborted, or fires while the call is in progress (zksoroban#100). Named
+ * `AbortError` — matching the DOM exception `fetch`'s own `AbortSignal`
+ * support throws — so callers can detect it the same standard way:
+ * `error.name === "AbortError"`, without needing an `instanceof` import.
+ */
+export class AbortError extends SorobanZkError {
+  constructor(message = "The operation was aborted") {
+    super(message, SorobanZkErrorCode.ABORTED);
+    this.name = "AbortError";
+  }
+}
+
+/**
+ * Throws {@link AbortError} if `signal` is already aborted. A no-op if
+ * `signal` wasn't supplied. Called at every natural checkpoint in
+ * `verifyOnChain` and `generateProof` — before starting work, and again
+ * before each subsequent async step — so an abort is noticed at the next
+ * checkpoint rather than only after the whole call finishes. Cancellation
+ * here is cooperative: an RPC call already in flight when `signal` fires
+ * still completes, but its result is never acted on and no further step
+ * starts.
+ */
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new AbortError();
   }
 }
 

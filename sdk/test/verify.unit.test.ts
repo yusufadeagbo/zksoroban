@@ -12,6 +12,7 @@ import { Keypair, rpc, xdr } from "@stellar/stellar-sdk";
 
 import { verifyOnChain } from "../src/verify";
 import {
+  AbortError,
   NetworkMismatchError,
   SorobanZkError,
   SorobanZkErrorCode,
@@ -324,6 +325,75 @@ test("verifyOnChain falls back to a generic error for an unrecognized failure", 
           return true;
         }
       );
+    }
+  );
+});
+
+// AbortSignal support (zksoroban#100).
+
+test("verifyOnChain rejects immediately with AbortError when signal is already aborted", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  // No withStubbedServer needed: throwIfAborted is the very first thing
+  // verifyOnChain does, before calldata is even resolved, so the real
+  // rpc.Server constructor is never reached.
+  await assert.rejects(
+    verifyOnChain({ ...DEFAULT_OPTS, signal: controller.signal }),
+    (err: unknown) => {
+      assert.ok(err instanceof AbortError);
+      assert.ok(err instanceof SorobanZkError);
+      assert.equal(err.code, SorobanZkErrorCode.ABORTED);
+      assert.equal((err as Error).name, "AbortError");
+      return true;
+    }
+  );
+});
+
+test("verifyOnChain rejects with AbortError when the signal fires during polling, and stops polling", async () => {
+  const controller = new AbortController();
+  let getTransactionCalls = 0;
+
+  await withStubbedServer(
+    () => ({
+      getNetwork: async () => ({ passphrase: STUB_PASSPHRASE }),
+      getAccount: async (id: string) => new stellarSdk.Account(id, "0"),
+      prepareTransaction: async (tx: any) => tx,
+      sendTransaction: async () => ({ status: "PENDING", hash: "a".repeat(64) }),
+      getTransaction: async () => {
+        getTransactionCalls += 1;
+        if (getTransactionCalls === 1) {
+          // Fires while verifyOnChain is inside the poll loop's delay()
+          // wait (POLL_INTERVAL_MS is far longer than 5ms), so this
+          // exercises the live abort-during-wait path, not just a
+          // pre-aborted signal's synchronous check.
+          setTimeout(() => controller.abort(), 5);
+          return { status: rpc.Api.GetTransactionStatus.NOT_FOUND };
+        }
+        throw new Error("polling must stop after the signal aborts, not continue");
+      }
+    }),
+    async () => {
+      await assert.rejects(
+        verifyOnChain({ ...DEFAULT_OPTS, signal: controller.signal }),
+        (err: unknown) => {
+          assert.ok(err instanceof AbortError);
+          assert.equal((err as Error).name, "AbortError");
+          return true;
+        }
+      );
+    }
+  );
+
+  assert.equal(getTransactionCalls, 1);
+});
+
+test("verifyOnChain succeeds normally when no signal is given (no regression)", async () => {
+  await withStubbedServer(
+    () => buildSuccessStub({}, { returnValue: xdr.ScVal.scvBool(true) }),
+    async () => {
+      const result = await verifyOnChain(DEFAULT_OPTS);
+      assert.equal(result.verified, true);
     }
   );
 });

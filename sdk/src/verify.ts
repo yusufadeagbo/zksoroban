@@ -15,6 +15,7 @@ import { withRetry } from "./retry.js";
 import { formatProof } from "./proof.js";
 import { createLogger, defaultLogger, Logger, LogHandler } from "./logger.js";
 import {
+  AbortError,
   ContractConfig,
   emitProofStage,
   NetworkConfig,
@@ -25,6 +26,7 @@ import {
   SorobanProofCalldata,
   SorobanZkError,
   SorobanZkErrorCode,
+  throwIfAborted,
   VerifierBatchItem,
   VerifyBatchOptions,
   VerifyBatchResult,
@@ -235,6 +237,35 @@ function assertNetworkPassphrase(network: NetworkConfig, actualPassphrase: strin
   }
 }
 
+/**
+ * Like a plain `setTimeout` promise, but rejects with {@link AbortError}
+ * immediately if `signal` fires during the wait, instead of only being
+ * noticed at the next checkpoint after the full delay elapses — this is
+ * what makes an abort during `verifyOnChain`'s poll loop (zksoroban#100)
+ * take effect right away rather than waiting out the rest of the current
+ * `POLL_INTERVAL_MS`.
+ */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AbortError());
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(new AbortError());
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
   if (opts.calldata) {
     return opts.calldata;
@@ -251,6 +282,8 @@ function resolveCalldata(opts: VerifyOptions): SorobanProofCalldata {
 }
 
 export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> {
+  throwIfAborted(opts.signal);
+
   const logger: Logger = opts.logger ? createLogger("DEBUG", opts.logger) : defaultLogger;
   const calldata = resolveCalldata(opts);
   validateCalldata(calldata);
@@ -268,6 +301,7 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       assertBundleNetwork(opts.bundle, network.passphrase);
     }
 
+    throwIfAborted(opts.signal);
     logger.debug("verifyOnChain", "getting account", { publicKey: opts.keypair.publicKey() });
     const account = await server.getAccount(opts.keypair.publicKey());
     const contract = new Contract(opts.network.contractId);
@@ -290,10 +324,12 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
       .setTimeout(30)
       .build();
 
+    throwIfAborted(opts.signal);
     logger.debug("verifyOnChain", "preparing transaction");
     const prepared = await server.prepareTransaction(transaction);
     prepared.sign(opts.keypair);
 
+    throwIfAborted(opts.signal);
     logger.info("verifyOnChain", "submitting transaction", { contractId: opts.network.contractId });
     const sendResult = await server.sendTransaction(prepared);
     if (sendResult.status !== "PENDING" && sendResult.status !== "DUPLICATE") {
@@ -307,11 +343,12 @@ export async function verifyOnChain(opts: VerifyOptions): Promise<VerifyResult> 
 
     const started = Date.now();
     while (Date.now() - started < DEFAULT_TIMEOUT_MS) {
+      throwIfAborted(opts.signal);
       logger.debug("verifyOnChain", "polling transaction status", { txHash: sendResult.hash });
       const result = await server.getTransaction(sendResult.hash);
 
       if (result.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        await delay(POLL_INTERVAL_MS, opts.signal);
         continue;
       }
 
