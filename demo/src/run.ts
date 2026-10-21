@@ -8,6 +8,7 @@ import {
   SnarkjsProof,
   TESTNET,
   ZkInputError,
+  checkNetwork,
   diffProofs,
   formatProof,
   poseidon,
@@ -169,6 +170,14 @@ async function main(): Promise<void> {
 
   log(`secret: ${answers.secret.toString()}`, "verbose");
   log(`network: ${answers.networkName} (${answers.network.rpcUrl})`, "verbose");
+
+  const health = await checkNetwork(answers.network);
+  if (health.reachable) {
+    log(`✓ network reachable (${health.latencyMs}ms, protocol v${health.protocolVersion})`, "normal");
+  } else {
+    log(`✗ network unreachable: ${health.error}`, "normal");
+  }
+
   log(`commitment: ${commitment.toString()}`, "normal");
   log("generating proof...", "verbose");
 

@@ -18,6 +18,17 @@ sense.
 
 ### Added
 
+- **sdk+demo**: `checkNetwork(network): Promise<NetworkHealth>` — a
+  lightweight `getNetwork` ping reporting reachability, round-trip
+  latency, and the RPC server's own reported network passphrase/protocol
+  version. Unlike every other RPC-touching SDK call, it never throws
+  (`{ reachable: false, error }` stands in for a thrown error) and never
+  retries (a health check needs one real attempt's unsmoothed latency).
+  Warns via `console.warn`, rather than throwing `NetworkMismatchError`,
+  on a `networkPassphrase` mismatch — reachability is useful information
+  even for a misconfigured `NetworkConfig`. `demo/src/run.ts` now calls it
+  at startup and prints the result. See
+  [docs/architecture.md](docs/architecture.md#rpc-health-check) (#87).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and

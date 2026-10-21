@@ -1,3 +1,4 @@
+export * from "./checkNetwork.js";
 export * from "./diff.js";
 export * from "./logger.js";
 export * from "./poseidon.js";
