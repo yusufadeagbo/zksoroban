@@ -443,6 +443,40 @@ each one requires an actual successful pairing check against a real
 proof, submitted in a real, fee-paying transaction — the same bound
 `VerificationCount` (finding #11) already relies on.
 
+### Nullifier Enumeration
+
+`Nullifier(BytesN<32>)` is a lookup map — it answers "has this exact
+nullifier been used," but there's no way to iterate a Soroban storage map
+to list every key that's ever been written to it. Per
+[zksoroban#85](https://github.com/yusufadeagbo/zksoroban/issues/85),
+`list_nullifiers(offset, limit)` and `nullifier_count()` add a second,
+*enumerable* structure alongside it, so an off-chain indexer can sync the
+full nullifier set by paging through it instead of scanning every
+transaction:
+
+```rust
+if verified {
+    record_verification_attempt(env, &commitment);
+    record_nullifier(env, &nullifier);   // NullifierCount + NullifierAt(i)
+    env.storage().persistent().set(&DataKey::Nullifier(nullifier), &true);
+}
+```
+
+`NullifierCount` (a `u32` in `instance()` storage) doubles as both the
+total count `nullifier_count()` returns and the next insertion index;
+`NullifierAt(index)` (in `persistent()` storage, same storage class as
+`Nullifier` itself) holds the nullifier recorded at that index.
+`list_nullifiers` is O(`limit`) to read — it walks `NullifierAt(offset)`
+through `NullifierAt(offset + limit - 1)` directly, capped at
+`nullifier_count()` — and `record_nullifier` is O(1) to write, regardless
+of how many nullifiers already exist.
+
+Growth is bounded the same way `Nullifier`/`VerificationCount` already are
+(`docs/security.md` findings #11/#14): an entry can only be created by an
+actual successful pairing check on a real, fee-paying transaction, not
+minted for free — this just doubles the storage cost per nullifier, not
+the growth *character*.
+
 ## Events
 
 Both `contracts/verifier::verify_proof` and `contracts/registry::verify_proof`

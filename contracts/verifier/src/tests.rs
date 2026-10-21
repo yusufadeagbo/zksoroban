@@ -1718,3 +1718,101 @@ fn verify_batch_rejects_call_with_no_authorization() {
 
     client.verify_batch(&caller, &Vec::new(&env));
 }
+
+// list_nullifiers / nullifier_count (#85).
+
+#[test]
+fn nullifier_count_starts_at_zero_and_list_nullifiers_is_empty() {
+    let (_env, _admin, client) = setup(10, 100);
+
+    assert_eq!(client.nullifier_count(), 0);
+    assert!(client.list_nullifiers(&0, &10).is_empty());
+}
+
+#[test]
+fn successful_verification_increments_nullifier_count_and_appends_to_the_list() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    let expected_nullifier = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A));
+
+    assert!(call_valid(&env, &client, &caller));
+
+    assert_eq!(client.nullifier_count(), 1);
+    assert_eq!(client.list_nullifiers(&0, &10), vec![&env, expected_nullifier]);
+}
+
+#[test]
+fn list_nullifiers_offset_and_limit_paginate_in_insertion_order() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+
+    // Three distinct, independently-generated proofs -- not replays of
+    // each other -- recorded in this exact order.
+    let n0 = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A));
+    let n1 = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A_1B));
+    let n2 = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A_2));
+
+    assert!(call_valid(&env, &client, &caller));
+    assert!(call_valid_1b(&env, &client, &caller));
+    assert!(call_valid_2(&env, &client, &caller));
+
+    assert_eq!(client.nullifier_count(), 3);
+
+    // First page: the first two, in insertion order (not reverse).
+    assert_eq!(client.list_nullifiers(&0, &2), vec![&env, n0.clone(), n1.clone()]);
+
+    // Second page: just the remainder.
+    assert_eq!(client.list_nullifiers(&2, &2), vec![&env, n2.clone()]);
+
+    // A single call covering everything returns all three, still in order.
+    assert_eq!(client.list_nullifiers(&0, &10), vec![&env, n0, n1, n2]);
+}
+
+#[test]
+fn list_nullifiers_returns_empty_once_offset_is_at_or_past_count() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+    assert!(call_valid(&env, &client, &caller));
+
+    assert!(client.list_nullifiers(&1, &10).is_empty());
+    assert!(client.list_nullifiers(&5, &10).is_empty());
+}
+
+#[test]
+fn nullifier_count_does_not_increment_on_a_failed_verification() {
+    let (env, _admin, client) = setup(10, 100);
+    let caller = Address::generate(&env);
+    let only_commitment = vec![&env, BytesN::from_array(&env, &VALID_PUBLIC_INPUT)];
+
+    let result = client.verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &only_commitment,
+    );
+    assert!(!result);
+
+    assert_eq!(client.nullifier_count(), 0);
+    assert!(client.list_nullifiers(&0, &10).is_empty());
+}
+
+#[test]
+fn verify_batch_also_records_nullifiers_for_each_successful_item() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    let n0 = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A));
+    let n1 = compute_nullifier(&env, &Bytes::from_array(&env, &VALID_PROOF_A_1B));
+
+    let results = client.verify_batch(
+        &caller,
+        &vec![&env, valid_batch_item(&env), valid_batch_item_1b(&env)],
+    );
+    assert_eq!(results, vec![&env, true, true]);
+
+    assert_eq!(client.nullifier_count(), 2);
+    assert_eq!(client.list_nullifiers(&0, &10), vec![&env, n0, n1]);
+}

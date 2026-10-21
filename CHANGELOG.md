@@ -18,6 +18,18 @@ sense.
 
 ### Added
 
+- **contracts**: `list_nullifiers(offset, limit) -> Vec<BytesN<32>>` and
+  `nullifier_count() -> u32` on `contracts/verifier` — a second,
+  enumerable nullifier structure (`NullifierCount` + `NullifierAt(index)`)
+  alongside the existing `Nullifier(BytesN<32>)` lookup map, which can
+  answer "has this been used" but can't be iterated. Lets an off-chain
+  indexer sync the full nullifier set by paging through it instead of
+  scanning every transaction. Returned in insertion order; an `offset` at
+  or past `nullifier_count()` returns an empty vec, not an error. Growth
+  is bounded the same way the lookup map already is (`docs/security.md`
+  finding #14/#15): only a real, fee-paying, successfully-verified
+  transaction can add an entry. See
+  [docs/architecture.md](docs/architecture.md#nullifier-enumeration) (#85).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and
