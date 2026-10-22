@@ -7,6 +7,7 @@ export * from "./serialize.js";
 export * from "./types.js";
 export * from "./validate.js";
 export * from "./verify.js";
+export * from "./verificationQueue.js";
 export * from "./verifyOffChain.js";
 export * from "./version.js";
 
