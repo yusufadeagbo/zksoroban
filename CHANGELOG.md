@@ -18,6 +18,15 @@ sense.
 
 ### Added
 
+- **sdk**: `createVerificationQueue({ concurrency })` — a client-side
+  queue that runs at most `concurrency` `verifyOnChain` calls
+  simultaneously and holds the excess callers in FIFO memory order,
+  transparently starting each one as soon as a slot opens, so
+  applications verifying many proofs in parallel can't overwhelm an RPC
+  endpoint's rate limit. `queue.verify(opts)` keeps `verifyOnChain`'s
+  resolve/reject behavior per call (a failed verification never affects
+  other queued jobs), and `queue.pending`/`queue.running` expose the
+  current occupancy (#88).
 - **sdk**: optional `onProgress` progress callback on `generateProof`
   (`@zksoroban/sdk/browser`) and `verifyOnChain`, reporting the real
   `witness_start`/`witness_done`/`proof_start`/`proof_done` and
