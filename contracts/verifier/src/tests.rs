@@ -1718,3 +1718,200 @@ fn verify_batch_rejects_call_with_no_authorization() {
 
     client.verify_batch(&caller, &Vec::new(&env));
 }
+
+#[contract]
+pub struct MockToken;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MockTransfer {
+    pub from: Address,
+    pub to: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+enum MockTokenKey {
+    Transfers,
+    Balance(Address),
+    FailNext,
+}
+
+#[contractimpl]
+impl MockToken {
+    pub fn set_balance(env: Env, addr: Address, balance: i128) {
+        env.storage().instance().set(&MockTokenKey::Balance(addr), &balance);
+    }
+
+    pub fn set_fail_next(env: Env, fail: bool) {
+        env.storage().instance().set(&MockTokenKey::FailNext, &fail);
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        let fail: bool = env.storage().instance().get(&MockTokenKey::FailNext).unwrap_or(false);
+        if fail {
+            panic!("transfer rejected");
+        }
+        let balance: i128 = env.storage().instance().get(&MockTokenKey::Balance(from.clone())).unwrap_or(i128::MAX);
+        if balance < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().instance().set(&MockTokenKey::Balance(from.clone()), &(balance - amount));
+
+        let mut transfers: Vec<MockTransfer> = env
+            .storage()
+            .instance()
+            .get(&MockTokenKey::Transfers)
+            .unwrap_or(Vec::new(&env));
+        transfers.push_back(MockTransfer { from, to, amount });
+        env.storage().instance().set(&MockTokenKey::Transfers, &transfers);
+    }
+
+    pub fn get_transfers(env: Env) -> Vec<MockTransfer> {
+        env.storage()
+            .instance()
+            .get(&MockTokenKey::Transfers)
+            .unwrap_or(Vec::new(&env))
+    }
+}
+
+#[test]
+fn get_verification_fee_defaults_to_none_and_zero() {
+    let (_env, _admin, client) = setup(10, 100);
+    let (token, amount, recipient) = client.get_verification_fee();
+    assert_eq!(token, None);
+    assert_eq!(amount, 0);
+    assert_eq!(recipient, None);
+
+    let config = client.get_config();
+    assert_eq!(config.fee_amount, None);
+    assert_eq!(config.fee_token, None);
+}
+
+#[test]
+fn set_verification_fee_rejects_negative_amount() {
+    let (env, _admin, client) = setup(10, 100);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let err = client.try_set_verification_fee(&token, &-100, &recipient);
+    assert_eq!(err, Err(Ok(Error::InvalidFee)));
+}
+
+#[test]
+#[should_panic]
+fn set_verification_fee_rejects_unauthorized_call() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
+    let client = VerifierContractClient::new(&env, &contract_id);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.set_verification_fee(&token, &500, &recipient);
+}
+
+#[test]
+fn set_verification_fee_updates_config_and_getter() {
+    let (env, _admin, client) = setup(10, 100);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    client.set_verification_fee(&token, &2_000_000, &recipient);
+
+    let (got_token, got_amount, got_recipient) = client.get_verification_fee();
+    assert_eq!(got_token, Some(token.clone()));
+    assert_eq!(got_amount, 2_000_000);
+    assert_eq!(got_recipient, Some(recipient));
+
+    let config = client.get_config();
+    assert_eq!(config.fee_amount, Some(2_000_000));
+    assert_eq!(config.fee_token, Some(token));
+}
+
+#[test]
+fn verify_proof_charges_fee_via_token_transfer() {
+    let (env, _admin, client) = setup(10, 100);
+    let token_id = env.register(MockToken, ());
+    let token_client = MockTokenClient::new(&env, &token_id);
+    let recipient = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    let fee_amount = 500_000i128;
+    client.set_verification_fee(&token_id, &fee_amount, &recipient);
+    token_client.set_balance(&caller, &1_000_000);
+
+    let verified = call_valid(&env, &client, &caller);
+    assert!(verified);
+
+    let transfers = token_client.get_transfers();
+    assert_eq!(transfers.len(), 1);
+    let transfer = transfers.get(0).unwrap();
+    assert_eq!(transfer.from, caller);
+    assert_eq!(transfer.to, recipient);
+    assert_eq!(transfer.amount, fee_amount);
+}
+
+#[test]
+fn verify_alias_charges_fee_and_succeeds() {
+    let (env, _admin, client) = setup(10, 100);
+    let token_id = env.register(MockToken, ());
+    let token_client = MockTokenClient::new(&env, &token_id);
+    let recipient = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    let fee_amount = 750_000i128;
+    client.set_verification_fee(&token_id, &fee_amount, &recipient);
+    token_client.set_balance(&caller, &1_000_000);
+
+    let verified = client.verify(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+    assert!(verified);
+
+    let transfers = token_client.get_transfers();
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers.get(0).unwrap().amount, fee_amount);
+}
+
+#[test]
+fn setting_fee_to_zero_disables_token_transfer() {
+    let (env, _admin, client) = setup(10, 100);
+    let token_id = env.register(MockToken, ());
+    let token_client = MockTokenClient::new(&env, &token_id);
+    let recipient = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    client.set_verification_fee(&token_id, &0, &recipient);
+
+    let verified = call_valid(&env, &client, &caller);
+    assert!(verified);
+
+    let transfers = token_client.get_transfers();
+    assert_eq!(transfers.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "insufficient balance")]
+fn verify_proof_aborts_when_fee_transfer_fails() {
+    let (env, _admin, client) = setup(10, 100);
+    let token_id = env.register(MockToken, ());
+    let token_client = MockTokenClient::new(&env, &token_id);
+    let recipient = Address::generate(&env);
+    let caller = Address::generate(&env);
+
+    client.set_verification_fee(&token_id, &1_000_000, &recipient);
+    token_client.set_balance(&caller, &100); // Insufficient balance
+
+    call_valid(&env, &client, &caller);
+}
+

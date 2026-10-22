@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Circuit constraint test harness for zksoroban circuits.",
-  "workspaces": ["sdk", "demo"],
+  "workspaces": ["sdk", "demo", "packages/proof-server"],
   "scripts": {
     "test:circuits": "mocha circuits/test/**/*.test.js --timeout 120000"
   },

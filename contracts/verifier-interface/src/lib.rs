@@ -43,6 +43,7 @@ pub enum Error {
     NoPendingVkUpdate = 9,
     TimelockNotElapsed = 10,
     AlreadyUsed = 11,
+    InvalidFee = 12,
 }
 
 /// Cross-contract interface for a deployed `contracts/verifier` instance.

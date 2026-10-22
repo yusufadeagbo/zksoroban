@@ -55,6 +55,14 @@ pub struct ContractConfig {
 }
 
 #[contracttype]
+#[derive(Clone)]
+pub struct VerificationFee {
+    pub token: Address,
+    pub amount: i128,
+    pub recipient: Address,
+}
+
+#[contracttype]
 enum DataKey {
     Admin,
     PendingAdmin,
@@ -68,6 +76,7 @@ enum DataKey {
     PendingVkUpdate,
     Paused,
     Nullifier(BytesN<32>),
+    VerificationFee,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -318,6 +327,46 @@ impl VerifierContract {
             .unwrap_or(false)
     }
 
+    pub fn set_verification_fee(
+        env: Env,
+        token: Address,
+        amount: i128,
+        recipient: Address,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if amount < 0 {
+            return Err(Error::InvalidFee);
+        }
+
+        env.storage().instance().set(
+            &DataKey::VerificationFee,
+            &VerificationFee {
+                token,
+                amount,
+                recipient,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn get_verification_fee(env: Env) -> (Option<Address>, i128, Option<Address>) {
+        if let Some(fee) = env
+            .storage()
+            .instance()
+            .get::<_, VerificationFee>(&DataKey::VerificationFee)
+        {
+            (Some(fee.token), fee.amount, Some(fee.recipient))
+        } else {
+            (None, 0, None)
+        }
+    }
+
     /// Return a snapshot of all non-sensitive contract configuration fields.
     /// This is a read-only view: no auth is required and no state is mutated.
     pub fn get_config(env: Env) -> Result<ContractConfig, Error> {
@@ -345,11 +394,21 @@ impl VerifierContract {
             .get(&DataKey::VkUpdateDelay)
             .ok_or(Error::NotInitialized)?;
 
+        let (fee_amount, fee_token) = if let Some(fee) = env
+            .storage()
+            .instance()
+            .get::<_, VerificationFee>(&DataKey::VerificationFee)
+        {
+            (Some(fee.amount), Some(fee.token))
+        } else {
+            (None, None)
+        };
+
         Ok(ContractConfig {
             admin,
             paused: is_contract_paused(&env),
-            fee_amount: None,
-            fee_token: None,
+            fee_amount,
+            fee_token,
             rate_limit_max: limits.max_calls,
             rate_limit_window: limits.window_size,
             timelock_delay: Some(vk_update_delay),
@@ -448,6 +507,24 @@ impl VerifierContract {
 
         Ok(results)
     }
+
+    pub fn verify(
+        env: Env,
+        caller: Address,
+        proof_a: Bytes,
+        proof_b: Bytes,
+        proof_c: Bytes,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        <Self as VerifierInterface>::verify_proof(
+            env,
+            caller,
+            proof_a,
+            proof_b,
+            proof_c,
+            public_inputs,
+        )
+    }
 }
 
 /// Published as `zksoroban-verifier-interface`'s `VerifierInterface` trait
@@ -469,6 +546,17 @@ impl VerifierInterface for VerifierContract {
             return Err(Error::ContractPaused);
         }
         caller.require_auth();
+
+        if let Some(fee) = env
+            .storage()
+            .instance()
+            .get::<_, VerificationFee>(&DataKey::VerificationFee)
+        {
+            if fee.amount > 0 {
+                let token_client = soroban_sdk::token::Client::new(&env, &fee.token);
+                token_client.transfer(&caller, &fee.recipient, &fee.amount);
+            }
+        }
 
         let item = ProofItem {
             proof_a,

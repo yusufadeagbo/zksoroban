@@ -1,0 +1,21 @@
+{
+  "name": "@zksoroban/proof-server",
+  "version": "0.1.0",
+  "description": "HTTP proof generation REST server for zksoroban circuits",
+  "main": "dist/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node ../../node_modules/tsx/dist/cli.mjs src/index.ts",
+    "dev": "node ../../node_modules/tsx/dist/cli.mjs watch src/index.ts",
+    "test": "node ../../node_modules/tsx/dist/cli.mjs --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@zksoroban/sdk": "file:../../sdk",
+    "express": "^4.21.2",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^26.5.1"
+  }
+}
